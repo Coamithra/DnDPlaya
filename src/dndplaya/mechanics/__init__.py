@@ -1,5 +1,5 @@
 """Mechanics subsystem — dice, characters, monsters, combat, checks, and state."""
-from dndplaya.mechanics.characters import Character, create_character, create_default_party
+from dndplaya.mechanics.characters import Character, compute_spell_slots, create_character, create_default_party
 from dndplaya.mechanics.checks import resolve_group_check, resolve_saving_throw, resolve_skill_check
 from dndplaya.mechanics.combat import CombatResolver, CombatResult, PressureSignal, RoundResult
 from dndplaya.mechanics.dice import DiceRoller
@@ -9,6 +9,7 @@ from dndplaya.mechanics.state import EventType, GameEvent, GameState
 __all__ = [
     "Character",
     "CombatResolver",
+    "compute_spell_slots",
     "CombatResult",
     "DiceRoller",
     "EventType",

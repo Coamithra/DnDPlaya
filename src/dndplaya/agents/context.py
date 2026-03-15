@@ -18,23 +18,24 @@ def estimate_history_tokens(history: list[Message]) -> int:
 def compact_history(agent: BaseAgent, max_tokens: int = 50000) -> None:
     """Compact an agent's history if it exceeds the token budget.
 
-    Uses the agent's actual tracked input token usage when available,
-    falling back to character-based estimation.
+    Uses the most recent API call's input token count as a proxy for
+    current context window size, falling back to character-based estimation.
 
     Strategy: Summarize the oldest messages into a single summary message,
     keeping the most recent messages intact.
     """
-    # Prefer actual token count from API responses when available
-    if agent.total_input_tokens > 0:
-        current_tokens = agent.total_input_tokens
+    # Use the last API call's input tokens as proxy for current context size.
+    # This reflects the actual conversation size, not a cumulative lifetime total.
+    if agent.last_input_tokens > 0:
+        current_tokens = agent.last_input_tokens
     else:
         current_tokens = estimate_history_tokens(agent.history)
 
     if current_tokens <= max_tokens:
         return
 
-    # Keep last 6 messages (3 exchanges), summarize the rest
-    keep_recent = 6
+    # Keep last 10 messages (5 exchanges), summarize the rest
+    keep_recent = 10
     if len(agent.history) <= keep_recent:
         return
 
@@ -45,7 +46,6 @@ def compact_history(agent: BaseAgent, max_tokens: int = 50000) -> None:
     summary_parts = []
     for msg in old_messages:
         role_label = "User/System" if msg.role == "user" else agent.name
-        # Truncate individual messages
         content = msg.content[:300] + "..." if len(msg.content) > 300 else msg.content
         summary_parts.append(f"[{role_label}]: {content}")
 

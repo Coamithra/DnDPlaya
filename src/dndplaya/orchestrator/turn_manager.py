@@ -30,15 +30,6 @@ class TurnManager:
             actions[player.name] = action
         return actions
 
-    def get_single_player_action(self, player: PlayerAgent, prompt: str) -> str:
-        """Get action from a specific player."""
-        compact_history(player)
-        return player.send(prompt)
-
-    def broadcast_to_players(self, message: str) -> dict[str, str]:
-        """Send same message to all players and collect responses."""
-        return self.get_player_actions(message)
-
     def next_round(self) -> int:
         self.round_number += 1
         return self.round_number

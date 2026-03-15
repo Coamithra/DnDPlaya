@@ -6,7 +6,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from dndplaya.mechanics.characters import Character, _compute_spell_slots
+from dndplaya.mechanics.characters import Character, compute_spell_slots
 from dndplaya.mechanics.monsters import Monster
 
 
@@ -147,7 +147,7 @@ class GameState:
             char.current_hp = min(char.max_hp, char.current_hp + heal)
 
             # Restore 1 slot per spell level (up to the original max)
-            original_slots = _compute_spell_slots(char.char_class, char.level)
+            original_slots = compute_spell_slots(char.char_class, char.level)
             for spell_level, max_count in original_slots.items():
                 current = char.spell_slots.get(spell_level, 0)
                 char.spell_slots[spell_level] = min(max_count, current + 1)
@@ -164,7 +164,7 @@ class GameState:
         """Long rest: full HP and all spell slots restored."""
         for char in self.get_alive_characters():
             char.current_hp = char.max_hp
-            original_slots = _compute_spell_slots(char.char_class, char.level)
+            original_slots = compute_spell_slots(char.char_class, char.level)
             char.spell_slots = dict(original_slots)
 
         self.add_event(

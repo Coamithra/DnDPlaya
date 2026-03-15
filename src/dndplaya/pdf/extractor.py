@@ -19,14 +19,3 @@ def extract_pdf_to_markdown(pdf_path: str | Path) -> str:
     return md_text
 
 
-def extract_pdf_pages(pdf_path: str | Path) -> list[dict]:
-    """Extract PDF as page-level chunks with metadata.
-
-    Returns list of dicts with 'metadata' and 'text' keys per page.
-    """
-    pdf_path = Path(pdf_path)
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
-    pages = pymupdf4llm.to_markdown(str(pdf_path), page_chunks=True)
-    return pages

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 from rich.console import Console
 
 from ..config import Settings
-from ..pdf.models import DungeonModule
+from ..pdf.models import DungeonModule, Room, Encounter
 from ..mechanics.state import GameState, GameEvent, EventType
 from ..mechanics.combat import CombatResolver
 from ..mechanics.characters import Character, create_default_party
@@ -67,6 +68,10 @@ class Session:
         self.phase = Phase.SETUP
         self.total_turns = 0
 
+    def _is_party_dead(self) -> bool:
+        """Check if all party members are dead (TPK)."""
+        return not self.state.get_alive_characters()
+
     def run(self) -> SessionResult:
         """Run the complete session and return results."""
         console.print("[bold green]Starting session...[/bold green]")
@@ -74,6 +79,11 @@ class Session:
         console.print(f"Party: {', '.join(c.name for c in self.party)}")
         console.print(f"Rooms: {len(self.module.rooms)}")
         console.print()
+
+        if not self.module.rooms:
+            console.print("[bold red]No rooms found in module! Aborting session.[/bold red]")
+            self.transcript.add_system_event("Session aborted: no rooms found in module.")
+            return self._build_result()
 
         try:
             self._transition_phase(Phase.EXPLORATION)
@@ -84,12 +94,18 @@ class Session:
                 console.print("[bold red]No rooms found in module![/bold red]")
                 return self._build_result()
 
-            # Process each room
-            rooms_to_visit = [entry.id]
+            # Process each room (BFS traversal)
+            rooms_to_visit: deque[str] = deque([entry.id])
             visited: set[str] = set()
 
             while rooms_to_visit and self.total_turns < MAX_TOTAL_TURNS:
-                room_id = rooms_to_visit.pop(0)
+                # Check for TPK before entering next room
+                if self._is_party_dead():
+                    console.print("[bold red]Total Party Kill — session ending.[/bold red]")
+                    self.transcript.add_system_event("Session ended: Total Party Kill.")
+                    break
+
+                room_id = rooms_to_visit.popleft()
                 if room_id in visited:
                     continue
 
@@ -123,7 +139,7 @@ class Session:
 
         return self._build_result()
 
-    def _process_room(self, room) -> None:
+    def _process_room(self, room: Room) -> None:
         """Process a single room: enter, explore, encounter, move on."""
         self.state.enter_room(room.id)
         self.dm.enter_room(room.id)
@@ -163,23 +179,37 @@ class Session:
 
             dm_description = dm_response  # For next round of player responses
 
-        # Handle encounters if any
+        # Handle encounters — only fire encounters with no trigger (always-on)
+        # or where trigger is set (future: evaluate trigger conditions)
         if room.encounters:
             for encounter in room.encounters:
                 if self.total_turns >= MAX_TOTAL_TURNS:
                     break
+                if self._is_party_dead():
+                    break
+                # Only auto-fire encounters with empty trigger (unconditional)
+                # Encounters with triggers are skipped (would need DM adjudication)
+                if encounter.trigger:
+                    self.transcript.add_system_event(
+                        f"Skipped conditional encounter (trigger: {encounter.trigger})"
+                    )
+                    continue
                 self._run_combat(encounter, room)
 
-    def _run_combat(self, encounter, room) -> None:
+    def _run_combat(self, encounter: Encounter, room: Room) -> None:
         """Run a combat encounter."""
         self._transition_phase(Phase.COMBAT)
 
         # Create monsters
         monsters = []
         for mref in encounter.monsters:
-            for i in range(mref.count):
-                name = f"{mref.name}" if mref.count == 1 else f"{mref.name} {i+1}"
-                monsters.append(create_monster(name, mref.cr))
+            try:
+                for i in range(mref.count):
+                    name = f"{mref.name}" if mref.count == 1 else f"{mref.name} {i+1}"
+                    monsters.append(create_monster(name, mref.cr))
+            except ValueError as e:
+                console.print(f"  [yellow]Skipping monster: {e}[/yellow]")
+                self.transcript.add_system_event(f"Skipped monster creation: {e}")
 
         if not monsters:
             return
@@ -207,7 +237,7 @@ class Session:
                 )
                 break
 
-            self.turn_manager.next_round()
+            self.state.round_number = round_num
             alive_chars = self.state.get_alive_characters()
             alive_monsters = self.state.get_alive_monsters()
 
@@ -227,7 +257,7 @@ class Session:
                     break
                 target = alive_monsters[0]  # Simple targeting: focus fire
                 result = self.combat.resolve_attack(char, target)
-                target.current_hp = max(0, target.current_hp - int(result.damage_dealt))
+                target.current_hp = max(0, target.current_hp - round(result.damage_dealt))
                 action_results.append(
                     f"{char.name} deals {result.damage_dealt:.0f} damage to {target.name}"
                     f" ({target.current_hp}/{target.max_hp} HP)"
@@ -249,7 +279,7 @@ class Session:
                     break
                 target = min(alive_chars, key=lambda c: c.current_hp)  # Target weakest
                 result = self.combat.resolve_attack(monster, target)
-                target.current_hp = max(0, target.current_hp - int(result.damage_dealt))
+                target.current_hp = max(0, target.current_hp - round(result.damage_dealt))
                 action_results.append(
                     f"{monster.name} deals {result.damage_dealt:.0f} damage to {target.name}"
                     f" ({target.current_hp}/{target.max_hp} HP)"
@@ -322,9 +352,10 @@ class Session:
             return
         if not self.phase.can_transition_to(new_phase):
             console.print(
-                f"[yellow]Warning: invalid phase transition "
-                f"{self.phase.name} → {new_phase.name}, forcing[/yellow]"
+                f"[yellow]Warning: skipping invalid phase transition "
+                f"{self.phase.name} -> {new_phase.name}[/yellow]"
             )
+            return  # Don't force invalid transitions
         self.phase = new_phase
         self.transcript.add_system_event(f"Phase: {new_phase.name}")
 

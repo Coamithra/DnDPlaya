@@ -32,6 +32,9 @@ def resolve_group_check(
     Each member rolls d20 + their modifier vs DC. If at least half succeed,
     the group check passes.
     """
+    if not modifiers:
+        return (False, [])
+
     individual_results: list[tuple[bool, int]] = []
     for modifier in modifiers:
         result = dice.check(modifier, dc)

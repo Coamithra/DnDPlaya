@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
 
-from .config import Settings, OUTPUT_DIR
+from .config import Settings, get_output_dir
 from .pdf.extractor import extract_pdf_to_markdown
 from .pdf.chunker import chunk_markdown
 from .mechanics.characters import create_default_party
@@ -18,6 +19,12 @@ from .feedback.narrative import generate_narrative
 from .feedback.reviews import generate_all_reviews
 
 console = Console()
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitize a string for use as a filename component."""
+    # Replace any non-alphanumeric/underscore/hyphen characters with underscore
+    return re.sub(r"[^\w\-]", "_", name.lower())
 
 
 @click.group()
@@ -29,16 +36,16 @@ def cli():
 @cli.command()
 @click.argument("pdf_path", type=click.Path(exists=True))
 @click.option("--party", default="default", help="Party preset name (default: default)")
-@click.option("--level", default=None, type=int, help="Party level (overrides .env)")
+@click.option("--level", default=None, type=click.IntRange(1, 11), help="Party level 1-11 (overrides .env)")
 @click.option("--seed", default=None, type=int, help="Random seed for reproducibility")
-@click.option("--runs", default=1, type=int, help="Number of runs")
+@click.option("--runs", default=1, type=click.IntRange(1), help="Number of runs")
 @click.option("--output", default=None, type=click.Path(), help="Output directory")
 def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: int, output: str | None):
     """Run a playtesting session on a dungeon PDF."""
     settings = Settings()
     settings.ensure_api_key()
 
-    if level:
+    if level is not None:
         settings.party_level = level
     if seed is not None:
         settings.seed = seed
@@ -58,6 +65,11 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 
     console.print(f"  Title: {module.title}")
     console.print(f"  Rooms found: {len(module.rooms)}")
+
+    if not module.rooms:
+        console.print("[bold red]No rooms found in module! Cannot run session.[/bold red]")
+        return
+
     for room in module.rooms:
         enc_count = len(room.encounters)
         console.print(f"    - {room.name} ({enc_count} encounters)")
@@ -104,7 +116,7 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
         (run_dir / "transcript.md").write_text(transcript_text, encoding="utf-8")
 
         for agent_name, review in reviews.items():
-            safe_name = agent_name.lower().replace(" ", "_")
+            safe_name = _safe_filename(agent_name)
             (run_dir / f"review_{safe_name}.md").write_text(review, encoding="utf-8")
 
         # Token usage — pricing per million tokens by model
@@ -139,13 +151,15 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 
         # Show narrative preview
         console.print("\n[bold]Narrative Preview:[/bold]")
-        console.print(Panel(Markdown(narrative[:1000] + "..." if len(narrative) > 1000 else narrative)))
+        preview = narrative[:1000] + "..." if len(narrative) > 1000 else narrative
+        console.print(Panel(Markdown(preview)))
 
         # Show review summaries
         console.print("\n[bold]Reviews:[/bold]")
         for agent_name, review in reviews.items():
+            preview = review[:500] + "..." if len(review) > 500 else review
             console.print(Panel(
-                Markdown(review[:500] + "..." if len(review) > 500 else review),
+                Markdown(preview),
                 title=f"{agent_name}'s Review",
             ))
 
@@ -163,12 +177,18 @@ def parse(pdf_path: str):
     console.print(f"[bold]Rooms:[/bold] {len(module.rooms)}")
 
     if module.introduction:
-        console.print(f"\n[bold]Introduction:[/bold]\n{module.introduction[:300]}...")
+        intro = module.introduction[:300]
+        if len(module.introduction) > 300:
+            intro += "..."
+        console.print(f"\n[bold]Introduction:[/bold]\n{intro}")
 
     for room in module.rooms:
         console.print(f"\n[bold cyan]{room.name}[/bold cyan] (ID: {room.id})")
         if room.read_aloud:
-            console.print(f"  [italic]Read-aloud:[/italic] {room.read_aloud[:150]}...")
+            ra = room.read_aloud[:150]
+            if len(room.read_aloud) > 150:
+                ra += "..."
+            console.print(f"  [italic]Read-aloud:[/italic] {ra}")
         console.print(f"  Encounters: {len(room.encounters)}")
         for enc in room.encounters:
             for m in enc.monsters:
@@ -181,22 +201,23 @@ def parse(pdf_path: str):
 
 
 @cli.command()
-def report():
+@click.option("--output", default=None, type=click.Path(), help="Output directory to list")
+def report(output: str | None):
     """List previous run outputs."""
-    if not OUTPUT_DIR.exists():
+    output_dir = Path(output) if output else get_output_dir()
+    if not output_dir.exists():
         console.print("No runs found.")
         return
 
-    runs = sorted(OUTPUT_DIR.iterdir())
+    runs = sorted(d for d in output_dir.iterdir() if d.is_dir())
     if not runs:
         console.print("No runs found.")
         return
 
     console.print("[bold]Previous runs:[/bold]")
     for run_dir in runs:
-        if run_dir.is_dir():
-            files = list(run_dir.iterdir())
-            console.print(f"  {run_dir.name} ({len(files)} files)")
+        files = list(run_dir.iterdir())
+        console.print(f"  {run_dir.name} ({len(files)} files)")
 
 
 if __name__ == "__main__":

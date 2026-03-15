@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..config import Settings
 from .base import BaseAgent
 
-CRITIC_SYSTEM_PROMPT = '''You are a D&D session reviewer. You've just finished playing through a dungeon module and need to write a review.
+CRITIC_SYSTEM_PROMPT_PREFIX = '''You are a D&D session reviewer. You've just finished playing through a dungeon module and need to write a review.
 
 ## Your Perspective
 Name: {agent_name}
@@ -11,7 +11,9 @@ Role: {role}
 {perspective}
 
 ## Session Transcript
-{transcript}
+'''
+
+CRITIC_SYSTEM_PROMPT_SUFFIX = '''
 
 ## Your Task
 Write a review of this dungeon module with two sections:
@@ -44,12 +46,15 @@ class CriticAgent:
 
         full_perspective = f"{perspective}\n\nNotes from during play:\n{notes_text}"
 
-        system = CRITIC_SYSTEM_PROMPT.format(
+        # Build system prompt without .format() on transcript to avoid crashes
+        # on curly braces in LLM-generated transcript text.
+        prefix = CRITIC_SYSTEM_PROMPT_PREFIX.format(
             agent_name=agent_name,
             role=role,
             perspective=full_perspective,
-            transcript=transcript[-8000:],  # Last ~2000 tokens of transcript
         )
+        # Use last ~5000 tokens of transcript for review context
+        system = prefix + transcript[-20000:] + CRITIC_SYSTEM_PROMPT_SUFFIX
 
         agent = BaseAgent(
             name=f"Critic_{agent_name}",
@@ -91,6 +96,8 @@ class CriticAgent:
         from .player import ARCHETYPES
 
         arch_info = ARCHETYPES.get(archetype, {})
+        if not arch_info:
+            raise ValueError(f"Unknown archetype: {archetype}. Must be one of {list(ARCHETYPES)}")
         perspective = (
             f"Archetype: {archetype.replace('_', ' ').title()}\n"
             f"MDA Aesthetics: {arch_info.get('aesthetics', 'N/A')}\n"

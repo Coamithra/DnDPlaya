@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from .models import DungeonModule, Room, Encounter, MonsterRef, Trap, Treasure
 
 
@@ -11,7 +12,6 @@ ROOM_PATTERNS = [
         re.IGNORECASE | re.MULTILINE,
     ),
     re.compile(r"^#{1,3}\s+(\d+|[A-Z])\.\s+(.*)", re.MULTILINE),
-    re.compile(r"^#{1,3}\s+((?:The\s+)?\w[\w\s]+?)$", re.MULTILINE),
 ]
 
 # Pattern for read-aloud / boxed text (blockquotes in markdown)
@@ -19,8 +19,9 @@ READ_ALOUD_PATTERN = re.compile(r"(?:^>\s*.+\n?)+", re.MULTILINE)
 
 # Pattern for monster references like "2 goblins (CR 1/4)" or "a CR 3 owlbear"
 # Handles hyphenated names (Half-Dragon), apostrophes (Will-o'-Wisp), multi-word names
+# Limited to 4 words max to avoid greedily consuming preceding prose
 MONSTER_PATTERN = re.compile(
-    r"(\d+)?\s*(?:x\s+)?([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*)*)\s*\(?\s*CR\s+(\d+(?:\s*/\s*\d+)?)\s*\)?",
+    r"(\d+)?\s*(?:x\s+)?([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})\s*\(?\s*CR\s+(\d+(?:\s*/\s*\d+)?)\s*\)?",
     re.IGNORECASE,
 )
 
@@ -34,10 +35,16 @@ DAMAGE_PATTERN = re.compile(r"\d+d\d+(?:\s*\+\s*\d+)?")
 def parse_cr(cr_str: str) -> float:
     """Parse a CR string like '1/4', '1 / 4', or '3' into a float."""
     cr_str = cr_str.strip()
-    if "/" in cr_str:
-        num, den = cr_str.split("/")
-        return int(num.strip()) / int(den.strip())
-    return float(cr_str)
+    try:
+        if "/" in cr_str:
+            num, den = cr_str.split("/")
+            den_int = int(den.strip())
+            if den_int == 0:
+                raise ValueError("CR denominator cannot be zero")
+            return int(num.strip()) / den_int
+        return float(cr_str)
+    except (ValueError, ZeroDivisionError) as e:
+        raise ValueError(f"Invalid CR string: {cr_str!r}") from e
 
 
 def extract_read_aloud(text: str) -> str:
@@ -46,7 +53,7 @@ def extract_read_aloud(text: str) -> str:
     if matches:
         # Clean up blockquote markers
         return "\n".join(
-            line.lstrip("> ").strip()
+            re.sub(r"^>\s?", "", line).strip()
             for match in matches
             for line in match.strip().split("\n")
         )
@@ -59,7 +66,10 @@ def extract_monsters(text: str) -> list[MonsterRef]:
     for match in MONSTER_PATTERN.finditer(text):
         count = int(match.group(1)) if match.group(1) else 1
         name = match.group(2).strip()
-        cr = parse_cr(match.group(3))
+        try:
+            cr = parse_cr(match.group(3))
+        except ValueError:
+            continue  # Skip unparseable CR values
         monsters.append(MonsterRef(name=name, cr=cr, count=count))
     return monsters
 
@@ -71,8 +81,9 @@ def extract_encounters(text: str) -> list[Encounter]:
         return []
 
     # Try to find encounter description context
+    desc = text[:200].strip() if len(text) > 200 else text.strip()
     encounter = Encounter(
-        description=text[:200].strip() if len(text) > 200 else text.strip(),
+        description=desc,
         monsters=monsters,
     )
     return [encounter]
@@ -149,6 +160,7 @@ def chunk_markdown(markdown: str) -> DungeonModule:
     # Identify which sections are rooms vs intro/background
     rooms: list[Room] = []
     room_id_counter = 0
+    assigned_ids: set[str] = set()  # Track assigned IDs to prevent collisions
 
     # Headings that are clearly NOT rooms
     non_room_keywords = [
@@ -170,8 +182,8 @@ def chunk_markdown(markdown: str) -> DungeonModule:
         elif any(kw in lower_heading for kw in non_room_keywords):
             pass  # Known non-room sections
         else:
-            # Check against room patterns (only first two specific patterns)
-            for pattern in ROOM_PATTERNS[:2]:
+            # Check against room patterns
+            for pattern in ROOM_PATTERNS:
                 m = pattern.match(f"{'#' * level} {heading}")
                 if m:
                     is_room = True
@@ -191,8 +203,13 @@ def chunk_markdown(markdown: str) -> DungeonModule:
 
         if is_room:
             room_id_counter += 1
-            if not room_id:
+            # Ensure unique room ID (prevent collisions between pattern-matched and heuristic IDs)
+            if not room_id or room_id in assigned_ids:
                 room_id = f"room_{room_id_counter}"
+            while room_id in assigned_ids:
+                room_id_counter += 1
+                room_id = f"room_{room_id_counter}"
+            assigned_ids.add(room_id)
 
             read_aloud = extract_read_aloud(content)
             encounters = extract_encounters(content)
@@ -216,20 +233,20 @@ def chunk_markdown(markdown: str) -> DungeonModule:
             elif any(kw in lower_heading for kw in ["background", "history", "lore"]):
                 background = content
 
-    # Second pass: find connections between rooms
+    # Second pass: find connections between rooms using word-boundary matching
     for room in rooms:
         for other in rooms:
             if other.id == room.id:
                 continue
-            # Check if this room's text references other rooms
             lower_text = room.raw_text.lower()
-            if other.name.lower() in lower_text or other.id in lower_text:
+            # Use word boundary regex to avoid false positives (e.g., "Hall" matching "hallway")
+            name_pattern = re.compile(r"\b" + re.escape(other.name.lower()) + r"\b")
+            if name_pattern.search(lower_text) or other.id in lower_text:
                 if other.id not in room.connections:
                     room.connections.append(other.id)
 
     # If no connections found, assume linear layout (may not match actual dungeon)
     if rooms and all(len(r.connections) == 0 for r in rooms):
-        import warnings
         warnings.warn(
             "No room cross-references found in PDF; assuming linear room layout. "
             "This may not match the actual dungeon structure.",

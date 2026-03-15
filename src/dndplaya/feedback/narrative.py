@@ -4,7 +4,7 @@ from ..config import Settings
 from ..agents.base import BaseAgent
 
 
-NARRATIVE_SYSTEM_PROMPT = '''You are a skilled writer converting a D&D session transcript into a readable narrative.
+NARRATIVE_SYSTEM_PROMPT_PREFIX = '''You are a skilled writer converting a D&D session transcript into a readable narrative.
 
 ## Your Task
 Transform the raw session transcript below into an engaging, readable account of the adventure.
@@ -21,14 +21,26 @@ This is NOT a raw transcript - it should read like a story that someone can enjo
 - Structure with clear scene breaks when moving between rooms
 
 ## Session Transcript
-{transcript}'''
+'''
+
+NARRATIVE_SYSTEM_PROMPT_SUFFIX = '''
+
+Write the session narrative now.'''
 
 
 def generate_narrative(transcript_text: str, settings: Settings) -> str:
     """Generate a readable narrative from a session transcript."""
+    # Build system prompt without .format() on transcript to avoid crashes
+    # on curly braces in LLM-generated transcript text.
+    system = (
+        NARRATIVE_SYSTEM_PROMPT_PREFIX
+        + transcript_text[-30000:]
+        + NARRATIVE_SYSTEM_PROMPT_SUFFIX
+    )
+
     agent = BaseAgent(
         name="Narrator",
-        system_prompt=NARRATIVE_SYSTEM_PROMPT.format(transcript=transcript_text[-12000:]),
+        system_prompt=system,
         settings=settings,
     )
 

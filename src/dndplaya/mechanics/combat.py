@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from dndplaya.mechanics.characters import Character, _compute_spell_slots
+from dndplaya.mechanics.characters import Character, compute_spell_slots
 from dndplaya.mechanics.dice import DiceRoller
 from dndplaya.mechanics.monsters import Monster
 
@@ -74,7 +74,7 @@ class CombatResolver:
         damage = max(1.0, self.dice.variance_roll(avg_dmg))
         damage = round(damage, 1)
 
-        remaining = target.current_hp - int(damage)
+        remaining = target.current_hp - round(damage)
         is_kill = remaining <= 0
 
         hint = f"{attacker.name} hits {target.name} for {damage} damage"
@@ -124,11 +124,13 @@ class CombatResolver:
             # Saving throw: target rolls vs caster's effective save DC
             # Use a simple DC based on 8 + caster attack_bonus as a proxy
             save_dc = 8 + caster.attack_bonus
-            saved, _ = self.dice.check(0, save_dc)
+            # Derive save bonus from monster's save_dc (save_dc - 10 base)
+            save_bonus = max(0, target.save_dc - 10)
+            saved, _ = self.dice.check(save_bonus, save_dc)
             if saved:
                 rolled_damage /= 2  # half damage on save
 
-            remaining = target.current_hp - int(rolled_damage)
+            remaining = target.current_hp - round(rolled_damage)
             is_kill = remaining <= 0
 
             hint = f"{caster.name}'s AoE hits {target.name} for {rolled_damage} damage"
@@ -172,7 +174,7 @@ class CombatResolver:
         for char in characters:
             for _level, count in char.spell_slots.items():
                 total_current_slots += count
-            original_slots = _compute_spell_slots(char.char_class, char.level)
+            original_slots = compute_spell_slots(char.char_class, char.level)
             for _level, count in original_slots.items():
                 total_max_slots += count
 

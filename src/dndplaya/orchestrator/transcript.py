@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..mechanics.state import GameEvent
-
 
 @dataclass
 class TranscriptEntry:
@@ -22,7 +20,6 @@ class SessionTranscript:
 
     def __init__(self):
         self.entries: list[TranscriptEntry] = []
-        self.game_events: list[GameEvent] = []
         self.current_room: str | None = None
 
     def add_dm_narration(self, content: str, round_number: int | None = None) -> None:
@@ -62,9 +59,6 @@ class SessionTranscript:
 
     def set_room(self, room_name: str) -> None:
         self.current_room = room_name
-
-    def add_game_event(self, event: GameEvent) -> None:
-        self.game_events.append(event)
 
     def to_text(self) -> str:
         """Convert transcript to readable text format."""

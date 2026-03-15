@@ -69,7 +69,7 @@ class Character(BaseModel):
     abilities: list[str] = Field(default_factory=list)
 
 
-def _compute_spell_slots(char_class: str, level: int) -> dict[int, int]:
+def compute_spell_slots(char_class: str, level: int) -> dict[int, int]:
     """Compute spell slot allocation for a character.
 
     Wizard gets level+1 total slots spread across spell levels.
@@ -110,7 +110,7 @@ def create_character(name: str, char_class: str, level: int) -> Character:
     max_hp = stats["base_hp"] + stats["hp_per_level"] * (level - 1)
     avg_damage = stats["avg_damage"][level]
     attack_bonus = stats["base_attack"] + int(stats["attack_bonus_per_level"] * (level - 1))
-    spell_slots = _compute_spell_slots(char_class, level)
+    spell_slots = compute_spell_slots(char_class, level)
 
     return Character(
         name=name,
