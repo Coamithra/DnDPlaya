@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import re
 
 
 class DiceRoller:
@@ -29,3 +30,37 @@ class DiceRoller:
         roll = self.d20()
         total = roll + modifier
         return (total >= dc, total)
+
+    def parse_and_roll(self, expression: str) -> int:
+        """Parse and roll a dice expression like '2d6+3' or '1d8+1d4+2'.
+
+        Supports multiple dice terms and +/- modifiers.
+        Returns 0 minimum (negative results clamped to 0).
+        """
+        expression = expression.strip().lower().replace(" ", "")
+        if not expression:
+            return 0
+
+        total = 0
+        # Split into terms, preserving +/- signs
+        terms = re.findall(r'[+-]?[^+-]+', expression)
+
+        for term in terms:
+            term = term.strip()
+            if not term:
+                continue
+
+            dice_match = re.match(r'^([+-]?)(\d*)d(\d+)$', term)
+            if dice_match:
+                sign = -1 if dice_match.group(1) == '-' else 1
+                count = int(dice_match.group(2)) if dice_match.group(2) else 1
+                sides = int(dice_match.group(3))
+                for _ in range(count):
+                    total += sign * self.roll(sides)
+            else:
+                try:
+                    total += int(term)
+                except ValueError:
+                    pass
+
+        return max(0, total)

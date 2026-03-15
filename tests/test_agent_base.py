@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
-from dndplaya.agents.base import BaseAgent, Message
+from dndplaya.agents.base import BaseAgent, ToolCall, AgentResponse
 from dndplaya.config import Settings
 
 
@@ -15,11 +15,38 @@ def _make_settings() -> Settings:
 
 
 def _mock_response(text: str = "Hello!", input_tokens: int = 10, output_tokens: int = 5):
-    """Create a mock API response."""
+    """Create a mock API response with a TextBlock."""
     from anthropic.types import TextBlock, Usage
     response = MagicMock()
     response.content = [TextBlock(type="text", text=text)]
     response.usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
+    response.stop_reason = "end_turn"
+    return response
+
+
+def _mock_tool_response(
+    text: str = "",
+    tool_name: str = "roll_check",
+    tool_id: str = "toolu_123",
+    tool_input: dict | None = None,
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+):
+    """Create a mock API response with text + tool use blocks."""
+    from anthropic.types import TextBlock, ToolUseBlock, Usage
+    content = []
+    if text:
+        content.append(TextBlock(type="text", text=text))
+    content.append(ToolUseBlock(
+        type="tool_use",
+        id=tool_id,
+        name=tool_name,
+        input=tool_input or {"modifier": 5, "dc": 15, "description": "test"},
+    ))
+    response = MagicMock()
+    response.content = content
+    response.usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
+    response.stop_reason = "tool_use"
     return response
 
 
@@ -97,3 +124,81 @@ class TestBaseAgentReset:
         assert agent.total_input_tokens == 0
         assert agent.total_output_tokens == 0
         assert agent.last_input_tokens == 0
+
+
+class TestBaseAgentToolUse:
+    def test_send_with_tools_returns_agent_response(self):
+        settings = _make_settings()
+        tools = [{"name": "test_tool", "description": "test", "input_schema": {"type": "object", "properties": {}}}]
+        agent = BaseAgent("Test", "Sys", settings, tools=tools)
+        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response("Narration", "roll_check")):
+            result = agent.send_with_tools("Do something")
+        assert isinstance(result, AgentResponse)
+        assert result.text == "Narration"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "roll_check"
+        assert result.stop_reason == "tool_use"
+
+    def test_send_with_tools_commits_history(self):
+        settings = _make_settings()
+        tools = [{"name": "test_tool", "description": "test", "input_schema": {"type": "object", "properties": {}}}]
+        agent = BaseAgent("Test", "Sys", settings, tools=tools)
+        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response("text")):
+            agent.send_with_tools("msg")
+        assert len(agent.history) == 2
+        assert agent.history[0].role == "user"
+        assert agent.history[0].content == "msg"
+        assert agent.history[1].role == "assistant"
+        assert isinstance(agent.history[1].content, list)
+
+    def test_send_with_tools_tracks_tokens(self):
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings, tools=[])
+        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response(input_tokens=100, output_tokens=50)):
+            agent.send_with_tools("msg")
+        assert agent.total_input_tokens == 100
+        assert agent.total_output_tokens == 50
+
+    def test_submit_tool_results(self):
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings, tools=[])
+        # First, simulate a send_with_tools that committed tool use to history
+        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response("narration", tool_id="toolu_1")):
+            agent.send_with_tools("start")
+
+        # Now submit tool results
+        with patch.object(agent.client.messages, "create", return_value=_mock_response("Next step")):
+            result = agent.submit_tool_results([("toolu_1", "Roll result: 15")])
+        assert isinstance(result, AgentResponse)
+        assert len(agent.history) == 4  # 2 from send_with_tools + 2 from submit
+
+    def test_tool_call_dataclass(self):
+        tc = ToolCall(id="toolu_1", name="roll_check", arguments={"dc": 15})
+        assert tc.id == "toolu_1"
+        assert tc.name == "roll_check"
+        assert tc.arguments == {"dc": 15}
+
+    def test_agent_response_defaults(self):
+        resp = AgentResponse(text="hello")
+        assert resp.text == "hello"
+        assert resp.tool_calls == []
+        assert resp.raw_content == []
+        assert resp.stop_reason == "end_turn"
+
+    def test_send_with_tools_text_only_response(self):
+        """When API returns only text (no tools), AgentResponse should have empty tool_calls."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings, tools=[])
+        with patch.object(agent.client.messages, "create", return_value=_mock_response("Just text")):
+            result = agent.send_with_tools("msg")
+        assert result.text == "Just text"
+        assert result.tool_calls == []
+        assert result.stop_reason == "end_turn"
+
+    def test_send_with_tools_no_tools_configured(self):
+        """send_with_tools works even when no tools are set (just acts like send)."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings)
+        with patch.object(agent.client.messages, "create", return_value=_mock_response("response")):
+            result = agent.send_with_tools("msg")
+        assert result.text == "response"

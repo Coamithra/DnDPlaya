@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 
 from .config import Settings, get_output_dir
-from .pdf.extractor import extract_pdf_to_markdown
+from .pdf.extractor import extract_pdf_to_markdown, extract_pdf_images
 from .pdf.chunker import chunk_markdown
 from .mechanics.characters import create_default_party
 from .orchestrator.session import Session
@@ -58,21 +58,12 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
         subtitle=f"Model: {settings.model}",
     ))
 
-    # Parse PDF
-    console.print("\n[bold]Parsing dungeon PDF...[/bold]")
+    # Extract PDF content
+    console.print("\n[bold]Extracting PDF content...[/bold]")
     markdown = extract_pdf_to_markdown(pdf_path)
-    module = chunk_markdown(markdown)
-
-    console.print(f"  Title: {module.title}")
-    console.print(f"  Rooms found: {len(module.rooms)}")
-
-    if not module.rooms:
-        console.print("[bold red]No rooms found in module! Cannot run session.[/bold red]")
-        return
-
-    for room in module.rooms:
-        enc_count = len(room.encounters)
-        console.print(f"    - {room.name} ({enc_count} encounters)")
+    images = extract_pdf_images(pdf_path)
+    console.print(f"  Markdown: {len(markdown):,} chars")
+    console.print(f"  Images: {len(images)} extracted")
 
     # Run sessions
     for run_num in range(1, runs + 1):
@@ -85,10 +76,11 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
         # Create party
         char_party = create_default_party(settings.party_level)
 
-        # Run session
+        # Run session — DM reads full module + map images
         session = Session(
-            module=module,
+            module_markdown=markdown,
             settings=settings,
+            map_images=images,
             party=char_party,
             seed=run_seed,
         )

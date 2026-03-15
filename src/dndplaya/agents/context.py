@@ -7,12 +7,28 @@ from .base import BaseAgent, Message
 CHARS_PER_TOKEN = 4
 
 
+def _extract_text_from_content(content: str | list) -> str:
+    """Extract text from message content (handles both str and list formats)."""
+    if isinstance(content, str):
+        return content
+    text_parts = []
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+            elif block.get("type") == "tool_result":
+                c = block.get("content", "")
+                if isinstance(c, str):
+                    text_parts.append(c)
+    return "\n".join(text_parts)
+
+
 def estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 
 
 def estimate_history_tokens(history: list[Message]) -> int:
-    return sum(estimate_tokens(m.content) for m in history)
+    return sum(estimate_tokens(_extract_text_from_content(m.content)) for m in history)
 
 
 def compact_history(agent: BaseAgent, max_tokens: int = 50000) -> None:
@@ -42,12 +58,14 @@ def compact_history(agent: BaseAgent, max_tokens: int = 50000) -> None:
     old_messages = agent.history[:-keep_recent]
     recent_messages = list(agent.history[-keep_recent:])
 
-    # Create a summary of old messages
+    # Create a summary of old messages, extracting text from any format
     summary_parts = []
     for msg in old_messages:
         role_label = "User/System" if msg.role == "user" else agent.name
-        content = msg.content[:300] + "..." if len(msg.content) > 300 else msg.content
-        summary_parts.append(f"[{role_label}]: {content}")
+        content = _extract_text_from_content(msg.content)
+        content = content[:300] + "..." if len(content) > 300 else content
+        if content.strip():
+            summary_parts.append(f"[{role_label}]: {content}")
 
     summary = "[CONVERSATION HISTORY SUMMARY]\n" + "\n".join(summary_parts)
 

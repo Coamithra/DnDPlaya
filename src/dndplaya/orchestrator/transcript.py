@@ -81,6 +81,17 @@ class SessionTranscript:
 
         return "\n".join(lines)
 
+    def get_recent_dm_narration(self, max_entries: int = 5) -> str:
+        """Get recent DM narration + system events for player context."""
+        recent = []
+        for entry in reversed(self.entries):
+            if entry.entry_type in ("narration", "system", "combat"):
+                recent.append(entry.content)
+            if len(recent) >= max_entries:
+                break
+        recent.reverse()
+        return "\n\n".join(recent) if recent else "The adventure begins."
+
     def get_summary(self) -> str:
         """Get a brief summary of the session."""
         rooms = set(e.room for e in self.entries if e.room)

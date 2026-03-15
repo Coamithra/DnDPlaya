@@ -1,48 +1,43 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 
 from rich.console import Console
 
 from ..config import Settings
-from ..pdf.models import DungeonModule, Room, Encounter
-from ..mechanics.state import GameState, GameEvent, EventType
-from ..mechanics.combat import CombatResolver
+from ..mechanics.state import GameState, EventType
 from ..mechanics.characters import Character, create_default_party
-from ..mechanics.monsters import create_monster
 from ..mechanics.dice import DiceRoller
 from ..agents.dm import DMAgent
 from ..agents.player import PlayerAgent, ARCHETYPES
-from ..agents.prompts.combat_narration import (
-    COMBAT_START, COMBAT_ROUND_RESULT, COMBAT_END,
-    ROOM_ENTRY, EXPLORATION_PROMPT,
-)
-from .phase import Phase
-from .turn_manager import TurnManager
+from ..agents.base import AgentResponse
+from ..agents.context import compact_history
 from .transcript import SessionTranscript
 
 console = Console()
 
-MAX_EXPLORATION_TURNS = 3  # Max back-and-forth per room before moving on
-MAX_COMBAT_ROUNDS = 10  # Safety limit for combat
-MAX_TOTAL_TURNS = 100  # Overall session limit
+MAX_TOTAL_TURNS = 100
+
+SESSION_START = """The party arrives at the dungeon entrance. The adventurers are:
+{party_description}
+
+Begin the adventure. Describe the entrance and what the party sees. \
+Use enter_room to mark the first area, then set the scene."""
 
 
 class Session:
-    """Main game session orchestrating DM, players, and mechanics."""
+    """Main game session: DM drives the adventure via tool use."""
 
     def __init__(
         self,
-        module: DungeonModule,
+        module_markdown: str,
         settings: Settings,
+        map_images: list[tuple[bytes, str]] | None = None,
         party: list[Character] | None = None,
         seed: int | None = None,
     ):
-        self.module = module
         self.settings = settings
         self.dice = DiceRoller(seed=seed or settings.seed)
-        self.combat = CombatResolver(self.dice)
 
         # Create party
         self.party = party or create_default_party(settings.party_level)
@@ -50,323 +45,297 @@ class Session:
         # Create game state
         self.state = GameState(characters=self.party)
 
-        # Create agents
-        self.dm = DMAgent(settings=settings, module=module)
+        # Create DM agent
+        self.dm = DMAgent(
+            module_markdown=module_markdown,
+            settings=settings,
+            map_images=map_images,
+        )
 
+        # Create player agents
         archetype_names = list(ARCHETYPES.keys())
         self.players: list[PlayerAgent] = []
+        self._player_map: dict[str, PlayerAgent] = {}
         for i, character in enumerate(self.party):
             archetype = archetype_names[i % len(archetype_names)]
-            self.players.append(PlayerAgent(
+            player = PlayerAgent(
                 settings=settings,
                 character=character,
                 archetype=archetype,
-            ))
+            )
+            self.players.append(player)
+            self._player_map[character.name.lower()] = player
 
-        self.turn_manager = TurnManager(dm=self.dm, players=self.players)
         self.transcript = SessionTranscript()
-        self.phase = Phase.SETUP
         self.total_turns = 0
+        self._terminated = False
 
     def _is_party_dead(self) -> bool:
         """Check if all party members are dead (TPK)."""
         return not self.state.get_alive_characters()
 
     def run(self) -> SessionResult:
-        """Run the complete session and return results."""
+        """Run the complete session via DM conversation loop."""
         console.print("[bold green]Starting session...[/bold green]")
-        console.print(f"Module: {self.module.title}")
         console.print(f"Party: {', '.join(c.name for c in self.party)}")
-        console.print(f"Rooms: {len(self.module.rooms)}")
         console.print()
 
-        if not self.module.rooms:
-            console.print("[bold red]No rooms found in module! Aborting session.[/bold red]")
-            self.transcript.add_system_event("Session aborted: no rooms found in module.")
-            return self._build_result()
-
         try:
-            self._transition_phase(Phase.EXPLORATION)
+            # Build opening prompt
+            party_desc = "\n".join(
+                f"- {c.name} ({c.char_class} level {c.level}): "
+                f"{c.max_hp} HP, AC {c.ac}"
+                for c in self.party
+            )
+            opening = SESSION_START.format(party_description=party_desc)
 
-            # Start with the entry room
-            entry = self.module.get_entry_room()
-            if not entry:
-                console.print("[bold red]No rooms found in module![/bold red]")
-                return self._build_result()
+            # First DM turn
+            compact_history(self.dm)
+            response = self.dm.send_with_tools(opening)
+            self.total_turns += 1
 
-            # Process each room (BFS traversal)
-            rooms_to_visit: deque[str] = deque([entry.id])
-            visited: set[str] = set()
-
-            while rooms_to_visit and self.total_turns < MAX_TOTAL_TURNS:
-                # Check for TPK before entering next room
+            # Main conversation loop
+            while not self._terminated and self.total_turns < MAX_TOTAL_TURNS:
                 if self._is_party_dead():
-                    console.print("[bold red]Total Party Kill — session ending.[/bold red]")
-                    self.transcript.add_system_event("Session ended: Total Party Kill.")
+                    console.print(
+                        "[bold red]Total Party Kill — session ending.[/bold red]"
+                    )
+                    self.transcript.add_system_event(
+                        "Session ended: Total Party Kill."
+                    )
                     break
 
-                room_id = rooms_to_visit.popleft()
-                if room_id in visited:
-                    continue
+                if response.tool_calls:
+                    # Process tool calls and submit results back to DM
+                    tool_results = self._process_tool_calls(response)
 
-                visited.add(room_id)
-                room = self.module.get_room(room_id)
-                if not room:
-                    continue
+                    if self._terminated or self._is_party_dead():
+                        break
 
-                console.print(f"[bold cyan]Entering: {room.name}[/bold cyan]")
-                self._process_room(room)
+                    compact_history(self.dm)
+                    response = self.dm.submit_tool_results(tool_results)
+                    self.total_turns += 1
+                else:
+                    # DM just narrated without tools — record and prompt to continue
+                    if response.text:
+                        self.transcript.add_dm_narration(response.text)
+                        console.print("  [dim]DM narrates[/dim]")
 
-                # Queue connected rooms not yet visited
-                for conn_id in room.connections:
-                    if conn_id not in visited:
-                        rooms_to_visit.append(conn_id)
+                    compact_history(self.dm)
+                    response = self.dm.send_with_tools(
+                        "Continue the adventure. Use your tools to progress — "
+                        "request player input, enter rooms, resolve checks, etc."
+                    )
+                    self.total_turns += 1
 
             if self.total_turns >= MAX_TOTAL_TURNS:
                 warning = (
-                    f"Session truncated: reached {MAX_TOTAL_TURNS} turn limit. "
-                    f"Some rooms may not have been visited."
+                    f"Session truncated: reached {MAX_TOTAL_TURNS} turn limit."
                 )
                 console.print(f"\n[bold yellow]{warning}[/bold yellow]")
                 self.transcript.add_system_event(warning)
 
-            self._transition_phase(Phase.COMPLETED)
             console.print("\n[bold green]Session complete![/bold green]")
+
         except Exception as e:
             console.print(f"\n[bold red]Session error: {e}[/bold red]")
-            self.transcript.add_system_event(f"Session ended early due to error: {e}")
-            self._transition_phase(Phase.COMPLETED)
+            self.transcript.add_system_event(
+                f"Session ended early due to error: {e}"
+            )
 
         return self._build_result()
 
-    def _process_room(self, room: Room) -> None:
-        """Process a single room: enter, explore, encounter, move on."""
-        self.state.enter_room(room.id)
-        self.dm.enter_room(room.id)
-        self.transcript.set_room(room.name)
+    def _process_tool_calls(
+        self, response: AgentResponse
+    ) -> list[tuple[str, str]]:
+        """Process all tool calls from a DM response."""
+        results = []
 
-        # DM describes the room
-        entry_prompt = ROOM_ENTRY.format(room_name=room.name)
-        dm_description = self.turn_manager.get_dm_description(entry_prompt)
-        self.transcript.add_dm_narration(dm_description)
-        console.print(f"  [dim]DM describes {room.name}[/dim]")
-        self.total_turns += 1
+        # Record any narration text before tool calls
+        if response.text:
+            self.transcript.add_dm_narration(response.text)
+            console.print("  [dim]DM narrates[/dim]")
 
-        # Exploration phase
-        self._transition_phase(Phase.EXPLORATION)
-        for turn in range(MAX_EXPLORATION_TURNS):
-            if self.total_turns >= MAX_TOTAL_TURNS:
-                break
+        for tc in response.tool_calls:
+            result = self._dispatch_tool(tc.name, tc.arguments)
+            results.append((tc.id, result))
 
-            # Players respond
-            actions = self.turn_manager.get_player_actions(dm_description)
-            for name, action in actions.items():
-                self.transcript.add_player_action(name, action)
-                self.state.add_event(GameEvent(
-                    event_type=EventType.PLAYER_ACTION,
-                    description=action,
-                    actor=name,
-                ))
+        return results
 
-            action_summary = "\n".join(f"{name}: {action}" for name, action in actions.items())
+    def _dispatch_tool(self, name: str, args: dict) -> str:
+        """Dispatch a single tool call to the appropriate handler."""
+        handlers = {
+            "roll_check": self._handle_roll_check,
+            "roll_dice": self._handle_roll_dice,
+            "apply_damage": self._handle_apply_damage,
+            "heal": self._handle_heal,
+            "get_party_status": self._handle_get_party_status,
+            "enter_room": self._handle_enter_room,
+            "request_player_input": self._handle_request_player_input,
+            "end_session": self._handle_end_session,
+        }
+        handler = handlers.get(name)
+        if not handler:
+            return f"Unknown tool: {name}"
+        try:
+            return handler(args)
+        except Exception as e:
+            return f"Error: {e}"
 
-            # DM responds to actions
-            dm_response = self.turn_manager.get_dm_description(
-                EXPLORATION_PROMPT.format(player_actions=action_summary)
-            )
-            self.transcript.add_dm_narration(dm_response)
-            self.total_turns += 1
+    def _handle_roll_check(self, args: dict) -> str:
+        modifier = args.get("modifier", 0)
+        dc = args.get("dc", 10)
+        description = args.get("description", "check")
+        success, total = self.dice.check(modifier, dc)
+        result = "SUCCESS" if success else "FAILURE"
+        text = (
+            f"{description}: rolled {total} (d20+{modifier}) "
+            f"vs DC {dc} — {result}"
+        )
+        self.transcript.add_system_event(f"Check: {text}")
+        console.print(f"    [dim]{text}[/dim]")
+        return text
 
-            dm_description = dm_response  # For next round of player responses
+    def _handle_roll_dice(self, args: dict) -> str:
+        expression = args.get("expression", "1d6")
+        reason = args.get("reason", "roll")
+        result = self.dice.parse_and_roll(expression)
+        text = f"{reason}: {expression} = {result}"
+        self.transcript.add_system_event(f"Roll: {text}")
+        console.print(f"    [dim]{text}[/dim]")
+        return text
 
-        # Handle encounters — only fire encounters with no trigger (always-on)
-        # or where trigger is set (future: evaluate trigger conditions)
-        if room.encounters:
-            for encounter in room.encounters:
-                if self.total_turns >= MAX_TOTAL_TURNS:
-                    break
-                if self._is_party_dead():
-                    break
-                # Only auto-fire encounters with empty trigger (unconditional)
-                # Encounters with triggers are skipped (would need DM adjudication)
-                if encounter.trigger:
-                    self.transcript.add_system_event(
-                        f"Skipped conditional encounter (trigger: {encounter.trigger})"
-                    )
-                    continue
-                self._run_combat(encounter, room)
+    def _handle_apply_damage(self, args: dict) -> str:
+        name = args.get("character_name", "")
+        amount = args.get("amount", 0)
+        description = args.get("description", "damage")
 
-    def _run_combat(self, encounter: Encounter, room: Room) -> None:
-        """Run a combat encounter."""
-        self._transition_phase(Phase.COMBAT)
+        char = self.state.get_character(name)
+        if not char:
+            available = ", ".join(c.name for c in self.party)
+            return f"Character '{name}' not found. Available: {available}"
 
-        # Create monsters
-        monsters = []
-        for mref in encounter.monsters:
-            try:
-                for i in range(mref.count):
-                    name = f"{mref.name}" if mref.count == 1 else f"{mref.name} {i+1}"
-                    monsters.append(create_monster(name, mref.cr))
-            except ValueError as e:
-                console.print(f"  [yellow]Skipping monster: {e}[/yellow]")
-                self.transcript.add_system_event(f"Skipped monster creation: {e}")
-
-        if not monsters:
-            return
-
-        self.state.start_combat(monsters)
-
-        # DM announces combat
-        enemies = ", ".join(f"{m.name} (HP:{m.max_hp}, AC:{m.ac})" for m in monsters)
-        party_status = ", ".join(
-            f"{c.name}: {c.current_hp}/{c.max_hp} HP" for c in self.state.get_alive_characters()
+        char.current_hp = max(0, char.current_hp - amount)
+        self.state.add_event(
+            EventType.ATTACK,
+            f"{description}: {name} takes {amount} damage",
+            target=name,
+        )
+        self.transcript.add_system_event(
+            f"Damage: {name} takes {amount} ({description}) "
+            f"— now {char.current_hp}/{char.max_hp} HP"
+        )
+        console.print(
+            f"    [red]{name} takes {amount} damage "
+            f"({char.current_hp}/{char.max_hp} HP)[/red]"
         )
 
-        combat_start = self.turn_manager.get_dm_description(
-            COMBAT_START.format(enemies=enemies, party_status=party_status)
+        status = f"{name}: {char.current_hp}/{char.max_hp} HP"
+        if char.current_hp == 0:
+            status += " (DOWN!)"
+        return status
+
+    def _handle_heal(self, args: dict) -> str:
+        name = args.get("character_name", "")
+        amount = args.get("amount", 0)
+        description = args.get("description", "healing")
+
+        char = self.state.get_character(name)
+        if not char:
+            available = ", ".join(c.name for c in self.party)
+            return f"Character '{name}' not found. Available: {available}"
+
+        old_hp = char.current_hp
+        char.current_hp = min(char.max_hp, char.current_hp + amount)
+        actual = char.current_hp - old_hp
+        self.state.add_event(
+            EventType.HEAL,
+            f"{description}: {name} healed for {actual}",
+            target=name,
         )
-        self.transcript.add_dm_narration(combat_start)
-        self.total_turns += 1
-
-        # Combat rounds
-        dm_narration = combat_start
-        for round_num in range(1, MAX_COMBAT_ROUNDS + 1):
-            if self.total_turns >= MAX_TOTAL_TURNS:
-                self.transcript.add_system_event(
-                    "Combat interrupted: session turn limit reached."
-                )
-                break
-
-            self.state.round_number = round_num
-            alive_chars = self.state.get_alive_characters()
-            alive_monsters = self.state.get_alive_monsters()
-
-            if not alive_chars or not alive_monsters:
-                break
-
-            # Get player actions (for narration flavor, mechanics are resolved separately)
-            player_actions = self.turn_manager.get_player_actions(dm_narration)
-            for name, action in player_actions.items():
-                self.transcript.add_player_action(name, action, round_number=round_num)
-
-            # Resolve mechanics: each character attacks a monster
-            action_results = []
-            for char in alive_chars:
-                alive_monsters = self.state.get_alive_monsters()
-                if not alive_monsters:
-                    break
-                target = alive_monsters[0]  # Simple targeting: focus fire
-                result = self.combat.resolve_attack(char, target)
-                target.current_hp = max(0, target.current_hp - round(result.damage_dealt))
-                action_results.append(
-                    f"{char.name} deals {result.damage_dealt:.0f} damage to {target.name}"
-                    f" ({target.current_hp}/{target.max_hp} HP)"
-                )
-                self.state.add_event(GameEvent(
-                    event_type=EventType.ATTACK,
-                    description=f"{char.name} attacks {target.name} for {result.damage_dealt:.0f} damage",
-                    actor=char.name,
-                    target=target.name,
-                    round_number=round_num,
-                ))
-                if target.current_hp <= 0:
-                    action_results.append(f"  {target.name} is defeated!")
-
-            # Monsters attack
-            for monster in self.state.get_alive_monsters():
-                alive_chars = self.state.get_alive_characters()
-                if not alive_chars:
-                    break
-                target = min(alive_chars, key=lambda c: c.current_hp)  # Target weakest
-                result = self.combat.resolve_attack(monster, target)
-                target.current_hp = max(0, target.current_hp - round(result.damage_dealt))
-                action_results.append(
-                    f"{monster.name} deals {result.damage_dealt:.0f} damage to {target.name}"
-                    f" ({target.current_hp}/{target.max_hp} HP)"
-                )
-                self.state.add_event(GameEvent(
-                    event_type=EventType.ATTACK,
-                    description=f"{monster.name} attacks {target.name} for {result.damage_dealt:.0f} damage",
-                    actor=monster.name,
-                    target=target.name,
-                    round_number=round_num,
-                ))
-
-            # Check pressure signals
-            pressure = self.combat.check_pressure_signals(
-                self.state.get_alive_characters(),
-                self.state.get_alive_monsters(),
-            )
-            pressure_text = ""
-            if pressure:
-                signals = [s.name for s in pressure]
-                pressure_text = f"\n[PRESSURE: {', '.join(signals)}]"
-                for s in pressure:
-                    self.state.add_event(GameEvent(
-                        event_type=EventType.PRESSURE_SIGNAL,
-                        description=s.name,
-                        round_number=round_num,
-                    ))
-
-            result_text = "\n".join(action_results)
-            self.transcript.add_combat_result(result_text, round_num)
-
-            # DM narrates the round
-            dm_narration = self.turn_manager.get_dm_description(
-                COMBAT_ROUND_RESULT.format(
-                    round_number=round_num,
-                    action_results=result_text,
-                    pressure_signals=pressure_text,
-                )
-            )
-            self.transcript.add_dm_narration(dm_narration, round_number=round_num)
-            self.total_turns += 1
-
-            # Update alive lists for next check
-            alive_monsters = self.state.get_alive_monsters()
-            alive_chars = self.state.get_alive_characters()
-
-        # Combat end
-        if self.state.get_alive_monsters():
-            outcome = "The party retreats from the remaining enemies."
-        elif not self.state.get_alive_characters():
-            outcome = "The party has been defeated! (TPK)"
-        else:
-            outcome = "All enemies have been defeated!"
-
-        party_status = ", ".join(
-            f"{c.name}: {c.current_hp}/{c.max_hp} HP" for c in self.party if c.current_hp > 0
+        self.transcript.add_system_event(
+            f"Heal: {name} healed {actual} ({description}) "
+            f"— now {char.current_hp}/{char.max_hp} HP"
         )
-
-        combat_end = self.turn_manager.get_dm_description(
-            COMBAT_END.format(outcome=outcome, party_status=party_status)
+        console.print(
+            f"    [green]{name} healed {actual} "
+            f"({char.current_hp}/{char.max_hp} HP)[/green]"
         )
-        self.transcript.add_dm_narration(combat_end)
-        self.state.end_combat()
-        self._transition_phase(Phase.EXPLORATION)
-        self.total_turns += 1
+        return f"{name}: {char.current_hp}/{char.max_hp} HP (healed {actual})"
 
-    def _transition_phase(self, new_phase: Phase) -> None:
-        """Transition to a new game phase, enforcing valid transitions."""
-        if self.phase == new_phase:
-            return
-        if not self.phase.can_transition_to(new_phase):
-            console.print(
-                f"[yellow]Warning: skipping invalid phase transition "
-                f"{self.phase.name} -> {new_phase.name}[/yellow]"
+    def _handle_get_party_status(self, args: dict) -> str:
+        lines = []
+        for char in self.party:
+            slots = ""
+            if char.spell_slots:
+                slots = f", spell slots: {dict(char.spell_slots)}"
+            status = "DOWN" if char.current_hp <= 0 else "OK"
+            lines.append(
+                f"- {char.name} ({char.char_class} L{char.level}): "
+                f"{char.current_hp}/{char.max_hp} HP, AC {char.ac}, "
+                f"attack +{char.attack_bonus}, avg damage {char.avg_damage}"
+                f"{slots} [{status}]"
             )
-            return  # Don't force invalid transitions
-        self.phase = new_phase
-        self.transcript.add_system_event(f"Phase: {new_phase.name}")
+        return "Party Status:\n" + "\n".join(lines)
+
+    def _handle_enter_room(self, args: dict) -> str:
+        room_name = args.get("room_name", "Unknown")
+        self.state.enter_room(room_name)
+        self.transcript.set_room(room_name)
+        console.print(f"[bold cyan]Entering: {room_name}[/bold cyan]")
+        return f"Entered: {room_name}"
+
+    def _handle_request_player_input(self, args: dict) -> str:
+        player_names = args.get("player_names", [])
+        if not player_names:
+            return "No player names specified."
+
+        # Get the DM's narration to send to players
+        dm_context = self.transcript.get_recent_dm_narration()
+
+        responses = {}
+        for name in player_names:
+            player = self._player_map.get(name.lower())
+            if not player:
+                responses[name] = f"[Unknown player: {name}]"
+                continue
+
+            # Only get input from alive characters
+            char = self.state.get_character(name)
+            if char and char.current_hp <= 0:
+                responses[name] = f"[{name} is unconscious and cannot act]"
+                self.transcript.add_player_action(name, "(unconscious)")
+                continue
+
+            compact_history(player)
+            action = player.send(dm_context)
+            responses[name] = action
+            self.transcript.add_player_action(name, action)
+            console.print(f"  [dim]{name} responds[/dim]")
+
+        result_lines = [
+            f"{name}: {action}" for name, action in responses.items()
+        ]
+        return "Player responses:\n" + "\n".join(result_lines)
+
+    def _handle_end_session(self, args: dict) -> str:
+        reason = args.get("reason", "Adventure complete")
+        self._terminated = True
+        self.transcript.add_system_event(f"Session ended: {reason}")
+        console.print(f"[bold green]Session ended: {reason}[/bold green]")
+        return f"Session ended: {reason}"
 
     def _build_result(self) -> SessionResult:
         """Build the final session result."""
+        token_usage = {"DM": self.dm.get_token_usage()}
+        for player in self.players:
+            token_usage[player.name] = player.get_token_usage()
         return SessionResult(
             transcript=self.transcript,
             state=self.state,
             dm=self.dm,
             players=self.players,
-            token_usage=self.turn_manager.get_token_summary(),
+            token_usage=token_usage,
         )
 
 
