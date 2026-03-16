@@ -202,3 +202,42 @@ class TestBaseAgentToolUse:
         with patch.object(agent.client.messages, "create", return_value=_mock_response("response")):
             result = agent.send_with_tools("msg")
         assert result.text == "response"
+
+
+class TestPromptCaching:
+    def test_cache_control_string_prompt(self):
+        """cache_control is added when system prompt is a string."""
+        result = BaseAgent._add_cache_control("Hello system")
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "Hello system"
+        assert result[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_control_list_prompt(self):
+        """cache_control is added to the last block when system prompt is a list."""
+        prompt = [
+            {"type": "text", "text": "First block"},
+            {"type": "text", "text": "Second block"},
+        ]
+        result = BaseAgent._add_cache_control(prompt)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert "cache_control" not in result[0]
+        assert result[1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_control_empty_list(self):
+        """Empty list returns empty list."""
+        result = BaseAgent._add_cache_control([])
+        assert result == []
+
+    def test_cache_control_in_api_call(self):
+        """Verify _make_api_call passes cache_control in the system kwarg."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "You are a test.", settings)
+        with patch.object(agent.client.messages, "create", return_value=_mock_response("Hi")) as mock_create:
+            agent.send("Hello")
+        call_kwargs = mock_create.call_args[1]
+        system = call_kwargs["system"]
+        assert isinstance(system, list)
+        assert system[0]["cache_control"] == {"type": "ephemeral"}

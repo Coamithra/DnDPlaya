@@ -3,103 +3,123 @@ from __future__ import annotations
 
 DM_TOOLS = [
     {
-        "name": "roll_check",
+        "name": "ask_skill_check",
         "description": (
-            "Roll a d20 + modifier against a DC. "
-            "Use for attack rolls, saving throws, and ability checks."
+            "Ask a player to make a skill check. The orchestrator rolls the dice "
+            "and resolves success/failure based on the character's skill bonus."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "modifier": {
-                    "type": "integer",
-                    "description": "The modifier to add to the d20 roll",
-                },
-                "dc": {
-                    "type": "integer",
-                    "description": "The difficulty class to beat",
-                },
-                "description": {
+                "player": {
                     "type": "string",
-                    "description": "What this check is for (e.g., 'Thorin attacks the goblin')",
+                    "description": "Name of the PC making the check",
+                },
+                "skill": {
+                    "type": "string",
+                    "description": "Skill to check (e.g., 'perception', 'stealth', 'athletics')",
+                },
+                "difficulty": {
+                    "type": "string",
+                    "enum": [
+                        "very_easy", "easy", "medium",
+                        "hard", "very_hard", "nearly_impossible",
+                    ],
+                    "description": "How hard the check is",
+                },
+                "has_advantage": {
+                    "type": "boolean",
+                    "description": "Whether the character has advantage on this check",
+                    "default": False,
                 },
             },
-            "required": ["modifier", "dc", "description"],
+            "required": ["player", "skill", "difficulty"],
         },
     },
     {
-        "name": "roll_dice",
+        "name": "attack",
         "description": (
-            "Roll a dice expression like '2d6+3'. "
-            "Use for damage rolls, random effects, and other variable results."
+            "A monster attacks a player character. The orchestrator resolves the "
+            "attack roll and damage automatically."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "expression": {
+                "attacker": {
                     "type": "string",
-                    "description": "Dice expression (e.g., '2d6+3', '1d8', '3d6')",
+                    "description": "Name of the attacking monster",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Name of the PC being attacked",
+                },
+            },
+            "required": ["attacker", "target"],
+        },
+    },
+    {
+        "name": "change_hp",
+        "description": (
+            "Change a PC's hit points. Use negative values for damage, "
+            "positive for healing. Returns updated HP."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Name of the PC",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "HP change: negative for damage, positive for healing",
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Why this roll is being made",
+                    "description": "What caused the HP change (e.g., 'fire trap', 'healing potion')",
                 },
             },
-            "required": ["expression", "reason"],
+            "required": ["target", "amount", "reason"],
         },
     },
     {
-        "name": "apply_damage",
-        "description": "Apply damage to a player character. Returns their updated HP.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "character_name": {
-                    "type": "string",
-                    "description": "Name of the PC to damage",
-                },
-                "amount": {
-                    "type": "integer",
-                    "description": "Amount of damage to deal",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What caused the damage",
-                },
-            },
-            "required": ["character_name", "amount", "description"],
-        },
-    },
-    {
-        "name": "heal",
+        "name": "roll_initiative",
         "description": (
-            "Heal a player character. HP is capped at their maximum. "
-            "Returns updated HP."
+            "Start combat by rolling initiative for all PCs and monsters. "
+            "Returns the turn order. Monsters are created from the CR table."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "character_name": {
-                    "type": "string",
-                    "description": "Name of the PC to heal",
-                },
-                "amount": {
-                    "type": "integer",
-                    "description": "Amount of HP to restore",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What caused the healing",
+                "monsters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Monster name",
+                            },
+                            "cr": {
+                                "type": "number",
+                                "description": "Challenge rating (e.g., 0.25, 1, 3)",
+                            },
+                        },
+                        "required": ["name", "cr"],
+                    },
+                    "description": "List of monsters entering combat",
                 },
             },
-            "required": ["character_name", "amount", "description"],
+            "required": ["monsters"],
         },
     },
     {
-        "name": "get_party_status",
+        "name": "request_group_input",
         "description": (
-            "Get current stats for all party members: "
-            "HP, AC, attack bonus, spell slots."
+            "Ask the entire party what they want to do. "
+            "Call this when you need player decisions — at choice points, "
+            "during their combat turns, or when addressing the group. "
+            "Players respond with actions and may use their own tools (attack/heal)."
         ),
         "input_schema": {
             "type": "object",
@@ -107,42 +127,14 @@ DM_TOOLS = [
         },
     },
     {
-        "name": "enter_room",
+        "name": "get_party_status",
         "description": (
-            "Signal that the party is entering a new room/area. "
-            "Updates transcript tracking."
+            "Get current stats for all party members: "
+            "HP, AC, attack bonus, skills, and spell slots."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {
-                "room_name": {
-                    "type": "string",
-                    "description": "Name of the room being entered",
-                },
-            },
-            "required": ["room_name"],
-        },
-    },
-    {
-        "name": "request_player_input",
-        "description": (
-            "Ask specific players what they want to do. "
-            "Call this when you need player decisions — in combat turns, "
-            "at choice points, or when addressing the party."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "player_names": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Names of players to ask (e.g., ['Thorin', 'Shadow'] "
-                        "or all four names for group input)"
-                    ),
-                },
-            },
-            "required": ["player_names"],
+            "properties": {},
         },
     },
     {
@@ -160,6 +152,64 @@ DM_TOOLS = [
                 },
             },
             "required": ["reason"],
+        },
+    },
+    # --- Module Reference Tools ---
+    {
+        "name": "search_module",
+        "description": (
+            "Search the module text for a keyword or phrase. "
+            "Returns up to 5 matches with page numbers and surrounding context. "
+            "Use to find monster stats, room descriptions, trap details, etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search term (e.g., 'goblin', 'trap', 'treasure')",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_page",
+        "description": (
+            "Read the full text of a specific page from the module. "
+            "Pages are 1-indexed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page_number": {
+                    "type": "integer",
+                    "description": "Page number to read (1-indexed)",
+                },
+            },
+            "required": ["page_number"],
+        },
+    },
+    {
+        "name": "next_page",
+        "description": (
+            "Read the next page after the last page you read. "
+            "If you haven't read any page yet, reads page 1."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "previous_page",
+        "description": (
+            "Read the previous page before the last page you read. "
+            "Requires having read at least one page first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
         },
     },
 ]

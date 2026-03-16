@@ -22,7 +22,7 @@ def test_no_compaction_when_under_budget():
         Message(role="assistant", content="hi"),
     ]
     agent = _make_agent(history, last_input_tokens=100)
-    compact_history(agent, max_tokens=50000)
+    compact_history(agent, max_tokens=150000)
     assert len(agent.history) == 2
 
 
@@ -47,7 +47,7 @@ def test_compaction_uses_last_input_tokens_not_cumulative():
     # even though total_input_tokens is 100000 (over budget if we used cumulative)
     agent = _make_agent(history, last_input_tokens=100)
     agent.total_input_tokens = 100000  # this should be ignored
-    compact_history(agent, max_tokens=50000)
+    compact_history(agent, max_tokens=150000)
     assert len(agent.history) == 2
 
 
@@ -57,9 +57,9 @@ def test_compaction_reduces_history():
     for i in range(20):
         history.append(Message(role="user", content=f"message {i}"))
         history.append(Message(role="assistant", content=f"response {i}"))
-    # 40 messages total
-    agent = _make_agent(history, last_input_tokens=60000)
-    compact_history(agent, max_tokens=50000)
+    # 40 messages total, last_input_tokens exceeds threshold
+    agent = _make_agent(history, last_input_tokens=160000)
+    compact_history(agent, max_tokens=150000)
     # Should keep 10 recent + 1 summary + possibly 1 synthetic ack
     assert len(agent.history) <= 12
     assert agent.history[0].role == "user"
@@ -72,8 +72,8 @@ def test_compaction_maintains_alternating_roles():
     for i in range(20):
         history.append(Message(role="user", content=f"msg {i}"))
         history.append(Message(role="assistant", content=f"reply {i}"))
-    agent = _make_agent(history, last_input_tokens=60000)
-    compact_history(agent, max_tokens=50000)
+    agent = _make_agent(history, last_input_tokens=160000)
+    compact_history(agent, max_tokens=150000)
     for i in range(len(agent.history) - 1):
         if agent.history[i].role == agent.history[i + 1].role:
             # Only allowed if it's the synthetic ack

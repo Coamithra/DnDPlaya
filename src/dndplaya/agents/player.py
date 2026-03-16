@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..config import Settings
 from ..mechanics.characters import Character
 from .base import BaseAgent
+from .player_tools import PLAYER_TOOLS
 
 # MDA archetype definitions
 ARCHETYPES = {
@@ -74,6 +75,9 @@ Level: {char_level}
 HP: {char_hp}
 AC: {char_ac}
 
+### Skills
+{char_skills}
+
 ## Your Play Style ({archetype_name})
 MDA Aesthetics: {aesthetics}
 Focus: {focus}
@@ -83,10 +87,27 @@ Focus: {focus}
 ## How to Play
 - Respond to the DM's descriptions with what your character does
 - Declare actions clearly: "I attack the goblin", "I search the room", "I try to persuade the guard"
-- In combat, state your intended action and target
 - Stay in character but be concise - this is a game, keep it moving
 - Coordinate with your party when it makes sense for your character
 - You can ONLY act on information your character has - no metagaming
+
+## Tools
+You have two tools:
+- **attack(target)**: Attack a monster by name. The system resolves the hit/miss and damage.
+- **heal(target)**: Heal a party member by name. Costs a spell slot. The system resolves the amount.
+
+Use these tools to take mechanical actions during combat or when the situation calls for it.
+
+## Urgency
+End every response with `[URGENCY: X]` where X is 1-5:
+- **5** = You absolutely must speak now (you were addressed by name, it's your combat turn, something critical to your archetype)
+- **4** = You were directly addressed or have something important to add
+- **3** = You have something relevant to contribute
+- **2** = You could add something but it's not important
+- **1** = Nothing to add right now
+
+During someone else's combat turn, keep urgency at 1-2 unless something truly urgent happens.
+When the DM addresses you by name, rate 4-5.
 
 ## Internal Notes
 While playing, silently note moments that engage or frustrate you through your archetype's lens.
@@ -112,12 +133,24 @@ class PlayerAgent(BaseAgent):
         self.archetype_info = ARCHETYPES[archetype]
         self.engagement_notes: list[str] = []
 
+        # Format skills for the prompt
+        if character.skills:
+            skill_lines = [
+                f"- {skill.replace('_', ' ').title()}: +{bonus}"
+                for skill, bonus in sorted(character.skills.items())
+                if bonus > 0
+            ]
+            char_skills = "\n".join(skill_lines) if skill_lines else "No special skill bonuses"
+        else:
+            char_skills = "No special skill bonuses"
+
         system = PLAYER_SYSTEM_PROMPT.format(
             char_name=character.name,
             char_class=character.char_class,
             char_level=character.level,
             char_hp=character.max_hp,
             char_ac=character.ac,
+            char_skills=char_skills,
             archetype_name=archetype.replace("_", " ").title(),
             aesthetics=self.archetype_info["aesthetics"],
             focus=self.archetype_info["focus"],
@@ -128,6 +161,7 @@ class PlayerAgent(BaseAgent):
             name=character.name,
             system_prompt=system,
             settings=settings,
+            tools=PLAYER_TOOLS,
         )
 
     def add_engagement_note(self, note: str) -> None:

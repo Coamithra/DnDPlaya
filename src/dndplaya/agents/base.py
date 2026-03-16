@@ -57,12 +57,23 @@ class BaseAgent:
         self.last_input_tokens = 0  # tokens from the most recent API call
         self.tools = tools
 
+    @staticmethod
+    def _add_cache_control(system_prompt: str | list) -> list:
+        """Wrap system prompt with cache_control for prompt caching."""
+        if isinstance(system_prompt, str):
+            return [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        # It's a list — add cache_control to the last block
+        result = [dict(block) for block in system_prompt]
+        if result:
+            result[-1]["cache_control"] = {"type": "ephemeral"}
+        return result
+
     def _make_api_call(self, messages: list[MessageParam], use_tools: bool = False):
         """Make an API call with retry logic. Returns the raw response."""
         kwargs = {
             "model": self.settings.model,
             "max_tokens": self.settings.max_tokens,
-            "system": self.system_prompt,
+            "system": self._add_cache_control(self.system_prompt),
             "messages": messages,
             "timeout": 60.0,
         }

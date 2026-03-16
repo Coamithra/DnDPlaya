@@ -31,7 +31,7 @@ def estimate_history_tokens(history: list[Message]) -> int:
     return sum(estimate_tokens(_extract_text_from_content(m.content)) for m in history)
 
 
-def compact_history(agent: BaseAgent, max_tokens: int = 50000) -> None:
+def compact_history(agent: BaseAgent, max_tokens: int = 150000) -> None:
     """Compact an agent's history if it exceeds the token budget.
 
     Uses the most recent API call's input token count as a proxy for

@@ -67,6 +67,69 @@ class Character(BaseModel):
     attack_bonus: int
     spell_slots: dict[int, int] = Field(default_factory=dict)
     abilities: list[str] = Field(default_factory=list)
+    skills: dict[str, int] = Field(default_factory=dict)
+    initiative_bonus: int = 0
+
+
+# Skill proficiency by class: "high" = prof + 3, "medium" = prof + 1
+SKILL_PROFICIENCIES: dict[str, dict[str, str]] = {
+    "Fighter": {
+        "athletics": "high", "intimidation": "high",
+        "perception": "medium",
+    },
+    "Rogue": {
+        "stealth": "high", "sleight_of_hand": "high", "acrobatics": "high",
+        "perception": "medium", "deception": "medium",
+    },
+    "Wizard": {
+        "arcana": "high", "investigation": "high",
+        "history": "medium", "perception": "medium",
+    },
+    "Cleric": {
+        "medicine": "high", "religion": "high",
+        "insight": "medium", "persuasion": "medium", "perception": "medium",
+    },
+}
+
+# Saving throw proficiencies by class (proficiency + 1 for proficient saves)
+SAVE_PROFICIENCIES: dict[str, list[str]] = {
+    "Fighter": ["strength_save", "constitution_save"],
+    "Rogue": ["dexterity_save", "intelligence_save"],
+    "Wizard": ["intelligence_save", "wisdom_save"],
+    "Cleric": ["wisdom_save", "charisma_save"],
+}
+
+# Initiative bonus by class
+INITIATIVE_BONUS: dict[str, int] = {
+    "Fighter": 1,
+    "Rogue": 3,
+    "Wizard": 1,
+    "Cleric": 0,
+}
+
+
+def compute_skills(char_class: str, level: int) -> dict[str, int]:
+    """Compute skill bonuses for a character based on class and level.
+
+    Uses standard 5e proficiency bonus: 2 + (level - 1) // 4
+    High skills = proficiency + 3, medium = proficiency + 1, default = 0.
+    Saving throw proficiencies = proficiency + 1.
+    """
+    proficiency = 2 + (level - 1) // 4
+    skills: dict[str, int] = {}
+
+    # Skill proficiencies
+    for skill, tier in SKILL_PROFICIENCIES.get(char_class, {}).items():
+        if tier == "high":
+            skills[skill] = proficiency + 3
+        elif tier == "medium":
+            skills[skill] = proficiency + 1
+
+    # Saving throw proficiencies
+    for save in SAVE_PROFICIENCIES.get(char_class, []):
+        skills[save] = proficiency + 1
+
+    return skills
 
 
 def compute_spell_slots(char_class: str, level: int) -> dict[int, int]:
@@ -111,6 +174,8 @@ def create_character(name: str, char_class: str, level: int) -> Character:
     avg_damage = stats["avg_damage"][level]
     attack_bonus = stats["base_attack"] + int(stats["attack_bonus_per_level"] * (level - 1))
     spell_slots = compute_spell_slots(char_class, level)
+    skills = compute_skills(char_class, level)
+    initiative_bonus = INITIATIVE_BONUS.get(char_class, 0)
 
     return Character(
         name=name,
@@ -123,6 +188,8 @@ def create_character(name: str, char_class: str, level: int) -> Character:
         attack_bonus=attack_bonus,
         spell_slots=spell_slots,
         abilities=[],
+        skills=skills,
+        initiative_bonus=initiative_bonus,
     )
 
 

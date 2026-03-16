@@ -5,14 +5,17 @@ from dndplaya.agents.dm_tools import DM_TOOLS
 
 
 EXPECTED_TOOL_NAMES = [
-    "roll_check",
-    "roll_dice",
-    "apply_damage",
-    "heal",
+    "ask_skill_check",
+    "attack",
+    "change_hp",
+    "roll_initiative",
+    "request_group_input",
     "get_party_status",
-    "enter_room",
-    "request_player_input",
     "end_session",
+    "search_module",
+    "read_page",
+    "next_page",
+    "previous_page",
 ]
 
 
@@ -22,7 +25,7 @@ class TestDMTools:
         assert tool_names == EXPECTED_TOOL_NAMES
 
     def test_tool_count(self):
-        assert len(DM_TOOLS) == 8
+        assert len(DM_TOOLS) == 11
 
     def test_all_tools_have_required_fields(self):
         for tool in DM_TOOLS:
@@ -40,72 +43,68 @@ class TestDMTools:
                 f"Tool '{tool['name']}' schema missing 'properties'"
             )
 
-    def test_roll_check_schema(self):
-        tool = next(t for t in DM_TOOLS if t["name"] == "roll_check")
+    def test_ask_skill_check_schema(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "ask_skill_check")
         props = tool["input_schema"]["properties"]
         required = tool["input_schema"]["required"]
 
-        assert "modifier" in props
-        assert "dc" in props
-        assert "description" in props
-        assert props["modifier"]["type"] == "integer"
-        assert props["dc"]["type"] == "integer"
-        assert props["description"]["type"] == "string"
-        assert set(required) == {"modifier", "dc", "description"}
+        assert "player" in props
+        assert "skill" in props
+        assert "difficulty" in props
+        assert "has_advantage" in props
+        assert props["player"]["type"] == "string"
+        assert props["skill"]["type"] == "string"
+        assert props["difficulty"]["type"] == "string"
+        assert "enum" in props["difficulty"]
+        assert props["has_advantage"]["type"] == "boolean"
+        assert set(required) == {"player", "skill", "difficulty"}
 
-    def test_roll_dice_schema(self):
-        tool = next(t for t in DM_TOOLS if t["name"] == "roll_dice")
+    def test_attack_schema(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "attack")
         props = tool["input_schema"]["properties"]
         required = tool["input_schema"]["required"]
 
-        assert "expression" in props
+        assert "attacker" in props
+        assert "target" in props
+        assert props["attacker"]["type"] == "string"
+        assert props["target"]["type"] == "string"
+        assert set(required) == {"attacker", "target"}
+
+    def test_change_hp_schema(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "change_hp")
+        props = tool["input_schema"]["properties"]
+        required = tool["input_schema"]["required"]
+
+        assert "target" in props
+        assert "amount" in props
         assert "reason" in props
-        assert set(required) == {"expression", "reason"}
-
-    def test_apply_damage_schema(self):
-        tool = next(t for t in DM_TOOLS if t["name"] == "apply_damage")
-        props = tool["input_schema"]["properties"]
-        required = tool["input_schema"]["required"]
-
-        assert "character_name" in props
-        assert "amount" in props
-        assert "description" in props
         assert props["amount"]["type"] == "integer"
-        assert set(required) == {"character_name", "amount", "description"}
+        assert set(required) == {"target", "amount", "reason"}
 
-    def test_heal_schema(self):
-        tool = next(t for t in DM_TOOLS if t["name"] == "heal")
+    def test_roll_initiative_schema(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "roll_initiative")
         props = tool["input_schema"]["properties"]
         required = tool["input_schema"]["required"]
 
-        assert "character_name" in props
-        assert "amount" in props
-        assert "description" in props
-        assert set(required) == {"character_name", "amount", "description"}
+        assert "monsters" in props
+        assert props["monsters"]["type"] == "array"
+        items = props["monsters"]["items"]
+        assert "name" in items["properties"]
+        assert "cr" in items["properties"]
+        assert set(items["required"]) == {"name", "cr"}
+        assert set(required) == {"monsters"}
+
+    def test_request_group_input_no_required(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "request_group_input")
+        props = tool["input_schema"]["properties"]
+        assert props == {}
+        assert "required" not in tool["input_schema"]
 
     def test_get_party_status_no_required(self):
         tool = next(t for t in DM_TOOLS if t["name"] == "get_party_status")
         props = tool["input_schema"]["properties"]
         assert props == {}
         assert "required" not in tool["input_schema"]
-
-    def test_enter_room_schema(self):
-        tool = next(t for t in DM_TOOLS if t["name"] == "enter_room")
-        props = tool["input_schema"]["properties"]
-        required = tool["input_schema"]["required"]
-
-        assert "room_name" in props
-        assert set(required) == {"room_name"}
-
-    def test_request_player_input_schema(self):
-        tool = next(t for t in DM_TOOLS if t["name"] == "request_player_input")
-        props = tool["input_schema"]["properties"]
-        required = tool["input_schema"]["required"]
-
-        assert "player_names" in props
-        assert props["player_names"]["type"] == "array"
-        assert props["player_names"]["items"]["type"] == "string"
-        assert set(required) == {"player_names"}
 
     def test_end_session_schema(self):
         tool = next(t for t in DM_TOOLS if t["name"] == "end_session")
@@ -114,6 +113,36 @@ class TestDMTools:
 
         assert "reason" in props
         assert set(required) == {"reason"}
+
+    def test_search_module_schema(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "search_module")
+        props = tool["input_schema"]["properties"]
+        required = tool["input_schema"]["required"]
+
+        assert "query" in props
+        assert props["query"]["type"] == "string"
+        assert set(required) == {"query"}
+
+    def test_read_page_schema(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "read_page")
+        props = tool["input_schema"]["properties"]
+        required = tool["input_schema"]["required"]
+
+        assert "page_number" in props
+        assert props["page_number"]["type"] == "integer"
+        assert set(required) == {"page_number"}
+
+    def test_next_page_no_required(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "next_page")
+        props = tool["input_schema"]["properties"]
+        assert props == {}
+        assert "required" not in tool["input_schema"]
+
+    def test_previous_page_no_required(self):
+        tool = next(t for t in DM_TOOLS if t["name"] == "previous_page")
+        props = tool["input_schema"]["properties"]
+        assert props == {}
+        assert "required" not in tool["input_schema"]
 
     def test_all_descriptions_non_empty(self):
         for tool in DM_TOOLS:
