@@ -54,8 +54,21 @@ class BaseAgent:
         self.history: list[Message] = []
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_creation_tokens = 0
+        self.total_cache_read_tokens = 0
         self.last_input_tokens = 0  # tokens from the most recent API call
         self.tools = tools
+
+    def _record_usage(self, response) -> None:
+        """Record token usage from an API response, including cache metrics."""
+        self.last_input_tokens = response.usage.input_tokens
+        self.total_input_tokens += response.usage.input_tokens
+        self.total_output_tokens += response.usage.output_tokens
+        # Cache metrics — available when prompt caching is active
+        cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+        cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        self.total_cache_creation_tokens += cache_creation
+        self.total_cache_read_tokens += cache_read
 
     @staticmethod
     def _add_cache_control(system_prompt: str | list) -> list:
@@ -106,6 +119,7 @@ class BaseAgent:
             {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
             for m in self.history
         ]
+        self._mark_last_for_caching(messages)
         messages.append({"role": "user", "content": user_message})
 
         response = self._make_api_call(messages)
@@ -120,14 +134,40 @@ class BaseAgent:
                 break
         if not assistant_text:
             raise ValueError(f"No text content in API response for agent '{self.name}'")
-        self.last_input_tokens = response.usage.input_tokens
-        self.total_input_tokens += response.usage.input_tokens
-        self.total_output_tokens += response.usage.output_tokens
+        self._record_usage(response)
 
         # Only commit to history after successful API call
         self.history.append(Message(role="user", content=user_message))
         self.history.append(Message(role="assistant", content=assistant_text))
         return assistant_text
+
+    @staticmethod
+    def _mark_last_for_caching(messages: list) -> None:
+        """Add cache_control to the last message's content block.
+
+        This marks everything up to (and including) that message as a
+        cacheable prefix, so subsequent calls that share the same prefix
+        get cache hits instead of reprocessing all prior tokens.
+
+        Creates copies to avoid mutating the original history objects.
+        """
+        if not messages:
+            return
+        last = messages[-1]
+        content = last["content"]
+        if isinstance(content, str):
+            last["content"] = [{
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        elif isinstance(content, list) and content:
+            # Copy the list and last block to avoid mutating history
+            new_content = list(content)
+            last_block = new_content[-1]
+            if isinstance(last_block, dict):
+                new_content[-1] = {**last_block, "cache_control": {"type": "ephemeral"}}
+            last["content"] = new_content
 
     def send_with_tools(self, user_message: str) -> AgentResponse:
         """Send a message with tool use enabled. Returns structured response."""
@@ -135,6 +175,7 @@ class BaseAgent:
             {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
             for m in self.history
         ]
+        self._mark_last_for_caching(messages)
         messages.append({"role": "user", "content": user_message})
 
         response = self._make_api_call(messages, use_tools=True)
@@ -163,6 +204,7 @@ class BaseAgent:
             {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
             for m in self.history
         ]
+        self._mark_last_for_caching(messages)
         messages.append({"role": "user", "content": result_content})
 
         response = self._make_api_call(messages, use_tools=True)
@@ -176,9 +218,7 @@ class BaseAgent:
         - Empty text blocks (filtered out to avoid API rejection on next call)
         - Ensures history always has valid content the API will accept
         """
-        self.last_input_tokens = response.usage.input_tokens
-        self.total_input_tokens += response.usage.input_tokens
-        self.total_output_tokens += response.usage.output_tokens
+        self._record_usage(response)
 
         text_parts = []
         tool_calls = []
@@ -220,6 +260,8 @@ class BaseAgent:
         return {
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
+            "cache_creation_tokens": self.total_cache_creation_tokens,
+            "cache_read_tokens": self.total_cache_read_tokens,
         }
 
     def dump_history(self) -> str:
@@ -247,8 +289,26 @@ class BaseAgent:
                 lines.append(f"--- {role} ---\n{''.join(parts)}\n")
         return "\n".join(lines)
 
+    def set_cached_context(self, context: str) -> None:
+        """Replace history with a single cached context exchange.
+
+        The context text is marked with cache_control so that
+        system + tools + context form a cached prefix. Subsequent
+        send/send_with_tools calls only pay full price for the new message.
+        """
+        self.history = [
+            Message(role="user", content=[{
+                "type": "text",
+                "text": context,
+                "cache_control": {"type": "ephemeral"},
+            }]),
+            Message(role="assistant", content="Understood. I'm ready to respond in character."),
+        ]
+
     def reset(self) -> None:
         self.history.clear()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_creation_tokens = 0
+        self.total_cache_read_tokens = 0
         self.last_input_tokens = 0

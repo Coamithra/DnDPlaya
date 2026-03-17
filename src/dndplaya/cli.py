@@ -125,24 +125,37 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
             safe_name = _safe_filename(agent_name)
             (run_dir / f"review_{safe_name}.md").write_text(review, encoding="utf-8")
 
-        # Token usage
+        # Token usage with cache-aware pricing
+        # Pricing per million tokens: (input, output, cache_write, cache_read)
         PRICING = {
-            "claude-haiku-4-5-20251001": (0.80, 4.00),
-            "claude-sonnet-4-6-20250514": (3.00, 15.00),
-            "claude-opus-4-6-20250514": (15.00, 75.00),
+            "claude-haiku-4-5-20251001": (0.80, 4.00, 1.00, 0.08),
+            "claude-sonnet-4-6-20250514": (3.00, 15.00, 3.75, 0.30),
+            "claude-opus-4-6-20250514": (15.00, 75.00, 18.75, 1.50),
         }
-        input_price, output_price = PRICING.get(
-            settings.model, (0.80, 4.00)
+        input_price, output_price, cache_write_price, cache_read_price = PRICING.get(
+            settings.model, (0.80, 4.00, 1.00, 0.08)
         )
 
         usage = result.token_usage
         total_input = sum(u["input_tokens"] for u in usage.values())
         total_output = sum(u["output_tokens"] for u in usage.values())
-        estimated_cost = (total_input * input_price + total_output * output_price) / 1_000_000
+        total_cache_creation = sum(u.get("cache_creation_tokens", 0) for u in usage.values())
+        total_cache_read = sum(u.get("cache_read_tokens", 0) for u in usage.values())
+        # Non-cached input = total input minus tokens that were cache hits
+        non_cached_input = total_input - total_cache_read
+        estimated_cost = (
+            non_cached_input * input_price
+            + total_output * output_price
+            + total_cache_creation * cache_write_price
+            + total_cache_read * cache_read_price
+        ) / 1_000_000
         usage_data = {
             "per_agent": usage,
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "total_cache_creation_tokens": total_cache_creation,
+            "total_cache_read_tokens": total_cache_read,
+            "cache_hit_rate": f"{total_cache_read / total_input * 100:.1f}%" if total_input else "0%",
             "model": settings.model,
             "estimated_cost_usd": estimated_cost,
         }
@@ -168,8 +181,10 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 
         # Print summary
         console.print(f"Output: {run_dir}")
+        cache_pct = f"{total_cache_read / total_input * 100:.0f}" if total_input else "0"
         console.print(
             f"  Tokens: {total_input:,} in + {total_output:,} out | "
+            f"Cache: {total_cache_read:,} read / {total_cache_creation:,} write ({cache_pct}% hit) | "
             f"Cost: ${estimated_cost:.4f}"
         )
         if page_counts:

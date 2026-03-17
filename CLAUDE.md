@@ -83,8 +83,10 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **Character skills**: Per-class skill bonuses computed from 5e proficiency formula. `compute_skills(class, level)` → dict of skill → bonus. Includes saving throw proficiencies.
 - **Investment/urgency system**: `request_group_input` collects responses from all players, parses urgency tags, runs up to 3 rounds of follow-up. Highest urgency speaks first.
 - **Player tools**: Players can `attack` and `heal` via tool use. Attack results (hit/miss/damage) are bundled into the group response for the DM. Monster HP is NOT modified — the DM tracks it.
-- **Prompt caching**: System prompts wrapped with `cache_control: {"type": "ephemeral"}` for Anthropic API prompt caching. Reduces repeated token processing.
-- **High compaction threshold**: Context compaction at 150k tokens (emergency-only with Haiku's 200k window). Typical sessions never trigger it, preserving prompt cache hits.
+- **Prompt caching**: Three-layer strategy: (1) system prompts have `cache_control`, (2) players use `set_cached_context(chat)` where `chat` is a single growing text of DM narrations + selected player actions — discarded responses never enter the chat, (3) `_mark_last_for_caching()` marks the last history message on every API call so the DM's growing conversation is always cached. Cache token tracking in `BaseAgent._record_usage()` feeds cache-aware cost calculation.
+- **Players have no persistent history**: Each player call rebuilds from the cached chat via `set_cached_context()`. Only winning responses are appended to the chat. This keeps the prefix stable for cache hits and avoids polluting the model's context with discarded attempts.
+- **High compaction threshold**: Context compaction at 150k tokens (emergency-only with Haiku's 200k window, DM only). Players don't use compaction — they use the cached chat approach instead.
+- **Early outs**: Session aborts on: DM stuck (5 consecutive no-tool turns), no narration (15 turns), cost budget exceeded ($3), with cache health warning (0 reads after 10 turns).
 - **DM-driven architecture**: DM receives a pre-game summary + map images, references specific pages during play via tools. No BFS room traversal or programmatic combat resolution.
 - **Page-based module reference**: Instead of stuffing the full module into the system prompt, the DM gets a summary and uses `search_module`/`read_page`/`next_page`/`previous_page` to look up details. Module reference frequency is tracked as a metric.
 - **Tool use**: BaseAgent supports `send_with_tools()` and `submit_tool_results()` for the Anthropic tool use API. `Message.content` is `str | list` to handle tool use blocks.
@@ -116,12 +118,13 @@ Tests cover: dice determinism + expression parsing, character/monster creation, 
 
 ## TODO (from playtesting sessions)
 
-1. **Cost optimization** — players eat 90% of tokens via follow-up history resend. Fix: ephemeral follow-ups, urgency ramp, lower player max_tokens
+1. ~~**Cost optimization** — players eat 90% of tokens via follow-up history resend~~ **DONE**: cached chat approach + cache token tracking
 2. **Transcript readability** — needs better formatting, module summary at top, explicit group input markers
-3. **Random tiebreaker** — same-urgency responses always pick first in list, should randomize
-4. **Log group input calls** — add explicit "request_group_input called" markers in transcript
+3. ~~**Random tiebreaker** — same-urgency responses always pick first in list, should randomize~~ **DONE**
+4. ~~**Log group input calls** — add explicit "request_group_input called" markers in transcript~~ **DONE**
 5. **`consult_map` tool** — Haiku struggles with map images; a text-based map description tool could help
 6. **HTML session viewer** — interactive playback with collapsible losing replies, prompt inspector, tool usage (see memory/project_html_viewer.md)
+7. **Validate caching live** — run a session and check `token_usage.json` for cache hit rate. If cache reads are 0, investigate breakpoint placement.
 
 ## Dependencies
 

@@ -98,6 +98,12 @@ class Session:
         self.total_turns = 0
         self._terminated = False
 
+        # Early-out tracking
+        self._consecutive_no_tool_turns = 0
+        self._narration_count = 0
+        self._cost_budget = 3.00  # USD — abort if exceeded
+        self._cache_check_turn = 10  # check cache health after this many turns
+
         # Write module summary + party info to transcript header
         if summary:
             self.transcript.add_system_event(f"MODULE SUMMARY:\n\n{summary}")
@@ -152,7 +158,18 @@ class Session:
                     )
                     break
 
+                # Early-out checks
+                abort_reason = self._check_early_outs()
+                if abort_reason:
+                    self._event(f"ABORT: {abort_reason}")
+                    self.transcript.add_system_event(
+                        f"Session aborted: {abort_reason}"
+                    )
+                    self._terminated = True
+                    break
+
                 if response.tool_calls:
+                    self._consecutive_no_tool_turns = 0
                     # Process tool calls and submit results back to DM
                     tool_results = self._process_tool_calls(response)
 
@@ -164,6 +181,7 @@ class Session:
                     self.total_turns += 1
                     self._tick("DM")
                 else:
+                    self._consecutive_no_tool_turns += 1
                     # DM produced text without tools — internal thinking, nudge to use tools
                     if response.text:
                         self.transcript.add_system_event(f"DM internal: {response.text}")
@@ -237,13 +255,62 @@ class Session:
             self._terminated = True
             return f"Error: {e}"
 
-    # --- New combat/skill handlers ---
+    # --- Early-out checks ---
+
+    def _check_early_outs(self) -> str | None:
+        """Check early-out conditions. Returns abort reason or None."""
+        # 1. DM stuck — no tools for 5 consecutive turns
+        if self._consecutive_no_tool_turns >= 5:
+            return f"DM stuck: {self._consecutive_no_tool_turns} consecutive turns with no tool calls"
+
+        # 2. No narration after 15 turns — DM is doing things but never narrating
+        if self.total_turns >= 15 and self._narration_count == 0:
+            return f"No narration: DM has not narrated after {self.total_turns} turns"
+
+        # 3. Cost budget exceeded
+        cost = self._estimate_current_cost()
+        if cost > self._cost_budget:
+            return f"Cost budget exceeded: ${cost:.2f} > ${self._cost_budget:.2f}"
+
+        # 4. Cache health — after N turns, if cache reads are 0, caching is broken
+        if self.total_turns == self._cache_check_turn:
+            total_cache_read = self.dm.total_cache_read_tokens
+            for p in self.players:
+                total_cache_read += p.total_cache_read_tokens
+            if total_cache_read == 0:
+                self._event(
+                    f"WARNING: 0 cache read tokens after {self.total_turns} turns — "
+                    "prompt caching may not be working!"
+                )
+                # Don't abort, just warn — it's not fatal
+
+        return None
+
+    def _estimate_current_cost(self) -> float:
+        """Estimate current session cost from all agents."""
+        PRICING = {
+            "claude-haiku-4-5-20251001": (0.80, 4.00, 1.00, 0.08),
+            "claude-sonnet-4-6-20250514": (3.00, 15.00, 3.75, 0.30),
+            "claude-opus-4-6-20250514": (15.00, 75.00, 18.75, 1.50),
+        }
+        ip, op, cwp, crp = PRICING.get(self.settings.model, (0.80, 4.00, 1.00, 0.08))
+
+        agents = [self.dm] + self.players
+        total_in = sum(a.total_input_tokens for a in agents)
+        total_out = sum(a.total_output_tokens for a in agents)
+        total_cw = sum(a.total_cache_creation_tokens for a in agents)
+        total_cr = sum(a.total_cache_read_tokens for a in agents)
+        non_cached = total_in - total_cr
+        return (non_cached * ip + total_out * op + total_cw * cwp + total_cr * crp) / 1_000_000
+
+    # --- Combat/skill handlers ---
 
     def _handle_narrate(self, args: dict) -> str:
         """DM narrates to the players."""
         text = args.get("text", "")
         if text:
             self.transcript.add_dm_narration(text)
+            self._narration_count += 1
         return "Narrated."
 
     def _handle_dm_review_note(self, args: dict) -> str:
@@ -469,10 +536,25 @@ class Session:
     # --- Player interaction ---
 
     def _handle_request_group_input(self, args: dict) -> str:
-        """Conversational group input with urgency-based turn selection."""
+        """Conversational group input with urgency-based turn selection.
+
+        Caching strategy: the "chat" is a single growing text that contains
+        all DM narrations, selected player actions, and game events up to now.
+        Each player call sends [cached chat] + short prompt. Discarded
+        responses never enter the chat. When a response wins, it's appended
+        to the chat so subsequent calls see it in the cached prefix.
+        """
         self.transcript.add_system_event("--- REQUEST GROUP INPUT ---")
         URGENCY_THRESHOLDS = [1, 2, 3, 3, 4, 4, 5]
-        dm_context = self.transcript.get_recent_dm_narration()
+
+        # Build the chat — everything that happened in the session so far.
+        # This is the cached prefix, identical for all players.
+        chat = self.transcript.get_game_context()
+        context_tokens = len(chat) // 4
+        self.transcript.add_system_event(
+            f"CACHE CONTEXT ({context_tokens}~tok) — identical for all players"
+        )
+
         alive_players = [
             (p, self.state.get_character(p.character.name))
             for p in self.players
@@ -483,12 +565,15 @@ class Session:
         if not alive_players:
             return "All players are unconscious."
 
-        # --- Round 1: All players respond to DM context ---
-        # Players compact at 20k tokens (they only need recent context, not full history)
+        # --- Round 1: All players respond ---
+        # Each player gets: [cached chat] + "What does [name] do?"
+        prompt_suffix = load_prompt("player_followup")
         round1_responses: list[tuple[PlayerAgent, str, int, list[str]]] = []
-        for player, char in alive_players:
-            compact_history(player, max_tokens=20000)
-            response = player.send_with_tools(dm_context)
+        for player, _ in alive_players:
+            player.set_cached_context(chat)
+            response = player.send_with_tools(
+                f"What does {player.character.name} do?\n\n{prompt_suffix}"
+            )
             text, urgency, mechanical = self._resolve_player_tools(player, response)
             self._tick(player.character.name)
             round1_responses.append((player, text, urgency, mechanical))
@@ -510,6 +595,11 @@ class Session:
         ]
         self.transcript.add_player_action(winner[0].character.name, winner[1])
 
+        # Append winner to the chat — subsequent calls see it in the cache
+        chat += f"\n{winner[0].character.name}: {winner[1]}"
+        for mech in winner[3]:
+            chat += f"\n[{mech}]"
+
         # Log all losing round 1 responses
         for player, text, urgency, mechanical in round1_responses[1:]:
             self.transcript.add_discarded_response(
@@ -522,26 +612,19 @@ class Session:
 
         # --- Follow-up rounds: everyone except last speaker ---
         for _round, min_urgency in enumerate(URGENCY_THRESHOLDS):
-            # Build the conversation so far as a prompt
-            thread_lines = [dm_context, ""]
-            for name, text, _ in thread:
-                thread_lines.append(f"{name}: {text}")
-            thread_lines.append("")
-            thread_lines.append(load_prompt("player_followup"))
-            followup_prompt = "\n".join(thread_lines)
-
-            # Ask everyone except the last speaker (ephemeral — don't grow history)
             follow_responses: list[tuple[PlayerAgent, str, int, list[str]]] = []
             passed: list[str] = []
-            for player, char in alive_players:
+            for player, _ in alive_players:
                 if player.character.name == last_speaker:
                     continue
-                snap = player.snapshot_history()
-                response = player.send_with_tools(followup_prompt)
+                # Fresh call: [cached chat (now includes winners)] + short prompt
+                player.set_cached_context(chat)
+                response = player.send_with_tools(
+                    f"What does {player.character.name} do?\n\n{prompt_suffix}"
+                )
                 text, urgency, mechanical = self._resolve_player_tools(
                     player, response
                 )
-                player.rollback_history(snap)  # ephemeral — don't grow history
                 self._tick(player.character.name)
                 if text == "pass" or not text.strip():
                     passed.append(player.character.name)
@@ -579,6 +662,11 @@ class Session:
             fw = follow_responses[0]
             thread.append((fw[0].character.name, fw[1], fw[3]))
             self.transcript.add_player_action(fw[0].character.name, fw[1])
+
+            # Append winner to the chat
+            chat += f"\n{fw[0].character.name}: {fw[1]}"
+            for mech in fw[3]:
+                chat += f"\n[{mech}]"
 
             # Log losing follow-up responses
             for player, text, urgency, mechanical in follow_responses[1:]:

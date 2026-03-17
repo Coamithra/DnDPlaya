@@ -14,12 +14,23 @@ def _make_settings() -> Settings:
     return Settings(anthropic_api_key=SecretStr("test-key-123"), max_tokens=512)
 
 
-def _mock_response(text: str = "Hello!", input_tokens: int = 10, output_tokens: int = 5):
+def _mock_response(
+    text: str = "Hello!",
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+):
     """Create a mock API response with a TextBlock."""
     from anthropic.types import TextBlock, Usage
     response = MagicMock()
     response.content = [TextBlock(type="text", text=text)]
-    response.usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
+    response.usage = Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+    )
     response.stop_reason = "end_turn"
     return response
 
@@ -31,6 +42,8 @@ def _mock_tool_response(
     tool_input: dict | None = None,
     input_tokens: int = 10,
     output_tokens: int = 5,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
 ):
     """Create a mock API response with text + tool use blocks."""
     from anthropic.types import TextBlock, ToolUseBlock, Usage
@@ -45,7 +58,12 @@ def _mock_tool_response(
     ))
     response = MagicMock()
     response.content = content
-    response.usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
+    response.usage = Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+    )
     response.stop_reason = "tool_use"
     return response
 
@@ -241,3 +259,50 @@ class TestPromptCaching:
         system = call_kwargs["system"]
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_tokens_tracked_on_send(self):
+        """Cache creation and read tokens are tracked via send()."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings)
+        resp = _mock_response(cache_creation_input_tokens=500, cache_read_input_tokens=0)
+        with patch.object(agent.client.messages, "create", return_value=resp):
+            agent.send("msg1")
+        assert agent.total_cache_creation_tokens == 500
+        assert agent.total_cache_read_tokens == 0
+        # Second call reads from cache
+        resp2 = _mock_response(cache_creation_input_tokens=0, cache_read_input_tokens=500)
+        with patch.object(agent.client.messages, "create", return_value=resp2):
+            agent.send("msg2")
+        assert agent.total_cache_creation_tokens == 500
+        assert agent.total_cache_read_tokens == 500
+
+    def test_cache_tokens_tracked_on_send_with_tools(self):
+        """Cache tokens tracked via send_with_tools()."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings, tools=[])
+        resp = _mock_tool_response(cache_creation_input_tokens=200, cache_read_input_tokens=100)
+        with patch.object(agent.client.messages, "create", return_value=resp):
+            agent.send_with_tools("msg")
+        assert agent.total_cache_creation_tokens == 200
+        assert agent.total_cache_read_tokens == 100
+
+    def test_cache_tokens_in_get_token_usage(self):
+        """get_token_usage() includes cache metrics."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings)
+        resp = _mock_response(cache_creation_input_tokens=300, cache_read_input_tokens=150)
+        with patch.object(agent.client.messages, "create", return_value=resp):
+            agent.send("msg")
+        usage = agent.get_token_usage()
+        assert usage["cache_creation_tokens"] == 300
+        assert usage["cache_read_tokens"] == 150
+
+    def test_reset_clears_cache_tokens(self):
+        """reset() zeroes out cache token counters."""
+        settings = _make_settings()
+        agent = BaseAgent("Test", "Sys", settings)
+        agent.total_cache_creation_tokens = 100
+        agent.total_cache_read_tokens = 200
+        agent.reset()
+        assert agent.total_cache_creation_tokens == 0
+        assert agent.total_cache_read_tokens == 0

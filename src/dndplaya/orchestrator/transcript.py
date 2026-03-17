@@ -134,6 +134,39 @@ class SessionTranscript:
         recent.reverse()
         return "\n\n".join(recent) if recent else "The adventure begins."
 
+    def get_game_context(self) -> str:
+        """Build a complete game context string for player calls.
+
+        Includes DM narration, player actions, and key system events
+        (combat results, skill checks, HP changes). Excludes internal/discarded
+        entries and verbose system metadata.
+        """
+        parts = []
+        for entry in self.entries:
+            if entry.entry_type == "narration":
+                parts.append(f"DM: {entry.content}")
+            elif entry.entry_type == "action":
+                parts.append(f"{entry.speaker}: {entry.content}")
+            elif entry.entry_type in ("combat", "system"):
+                # Include game-relevant events, skip metadata
+                c = entry.content
+                if c.startswith("MODULE SUMMARY:") or c.startswith("PARTY:"):
+                    continue
+                if c.startswith("---"):
+                    continue
+                if c.startswith("DM internal:"):
+                    continue
+                if c.startswith("Round 1 urgency:") or c.startswith("Follow-up round"):
+                    continue
+                if c.startswith("All players passed"):
+                    continue
+                if c.startswith("No response met urgency"):
+                    continue
+                if c.startswith("Group input hit"):
+                    continue
+                parts.append(f"[{c}]")
+        return "\n".join(parts) if parts else "The adventure begins."
+
     def get_summary(self) -> str:
         """Get a brief summary of the session."""
         rooms = set(e.room for e in self.entries if e.room)

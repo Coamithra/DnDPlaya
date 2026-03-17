@@ -54,6 +54,10 @@ class TestSessionToolDispatch:
         session._active_monsters = {}
         session._initiative_order = []
         session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
 
         return session
 
@@ -305,6 +309,10 @@ class TestProcessToolCalls:
         session._active_monsters = {}
         session._initiative_order = []
         session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
 
         return session
 
@@ -376,6 +384,10 @@ class TestModuleReferenceTools:
         session._active_monsters = {}
         session._initiative_order = []
         session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
 
         return session
 
@@ -534,6 +546,10 @@ class TestMonsterRegistration:
         session._active_monsters = {}
         session._initiative_order = []
         session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
 
         return session
 
