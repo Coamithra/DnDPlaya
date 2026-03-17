@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 
 @dataclass
@@ -18,12 +19,42 @@ class TranscriptEntry:
 class SessionTranscript:
     """Records the full session for narrative generation."""
 
-    def __init__(self):
+    def __init__(self, log_path: Path | None = None):
         self.entries: list[TranscriptEntry] = []
         self.current_room: str | None = None
+        self._log_path = log_path
+
+    def _append(self, entry: TranscriptEntry) -> None:
+        """Add entry to list and flush to log file if configured."""
+        self.entries.append(entry)
+        if self._log_path:
+            self._flush(entry)
+
+    def _flush(self, entry: TranscriptEntry) -> None:
+        """Append a single entry to the live log file."""
+        content = entry.content
+        if entry.entry_type == "narration":
+            line = f"---\n\n### DM\n\n{content}\n\n"
+        elif entry.entry_type == "action":
+            line = f"---\n\n### {entry.speaker} ✦\n\n{content}\n\n"
+        elif entry.entry_type == "discarded":
+            line = f"\n*{entry.speaker} (not selected):* {content}\n\n"
+        elif entry.entry_type == "combat":
+            line = f"\n> ⚔ {content}\n\n"
+        elif content.startswith("MODULE SUMMARY:") or content.startswith("PARTY:"):
+            line = f"\n## {content}\n\n"
+        elif content.startswith("---"):
+            # Group input markers — make them visible
+            line = f"\n---\n\n**{content.strip('- ')}**\n\n"
+        elif content.startswith("DM internal:"):
+            line = f"\n*{content}*\n\n"
+        else:
+            line = f"\n`{content}`\n\n"
+        with open(self._log_path, "a", encoding="utf-8") as f:
+            f.write(line)
 
     def add_dm_narration(self, content: str, round_number: int | None = None) -> None:
-        self.entries.append(TranscriptEntry(
+        self._append(TranscriptEntry(
             speaker="DM",
             content=content,
             entry_type="narration",
@@ -32,7 +63,7 @@ class SessionTranscript:
         ))
 
     def add_player_action(self, player_name: str, content: str, round_number: int | None = None) -> None:
-        self.entries.append(TranscriptEntry(
+        self._append(TranscriptEntry(
             speaker=player_name,
             content=content,
             entry_type="action",
@@ -41,7 +72,7 @@ class SessionTranscript:
         ))
 
     def add_combat_result(self, content: str, round_number: int) -> None:
-        self.entries.append(TranscriptEntry(
+        self._append(TranscriptEntry(
             speaker="System",
             content=content,
             entry_type="combat",
@@ -49,8 +80,17 @@ class SessionTranscript:
             room=self.current_room,
         ))
 
+    def add_discarded_response(self, player_name: str, content: str, urgency: int) -> None:
+        """Log a player response that wasn't selected (for analysis)."""
+        self._append(TranscriptEntry(
+            speaker=player_name,
+            content=content,
+            entry_type="discarded",
+            room=self.current_room,
+        ))
+
     def add_system_event(self, content: str) -> None:
-        self.entries.append(TranscriptEntry(
+        self._append(TranscriptEntry(
             speaker="System",
             content=content,
             entry_type="system",
@@ -74,6 +114,8 @@ class SessionTranscript:
                 lines.append(f"**DM:** {entry.content}\n")
             elif entry.entry_type == "action":
                 lines.append(f"**{entry.speaker}:** {entry.content}\n")
+            elif entry.entry_type == "discarded":
+                lines.append(f"~~**{entry.speaker}:**~~ *(not selected)* {entry.content}\n")
             elif entry.entry_type == "combat":
                 lines.append(f"*[Combat: {entry.content}]*\n")
             elif entry.entry_type == "system":

@@ -5,10 +5,13 @@ from dndplaya.agents.dm_tools import DM_TOOLS
 
 
 EXPECTED_TOOL_NAMES = [
+    "narrate",
+    "review_note",
     "ask_skill_check",
     "attack",
     "change_hp",
     "roll_initiative",
+    "next_combat_turn",
     "request_group_input",
     "get_party_status",
     "end_session",
@@ -25,7 +28,7 @@ class TestDMTools:
         assert tool_names == EXPECTED_TOOL_NAMES
 
     def test_tool_count(self):
-        assert len(DM_TOOLS) == 11
+        assert len(DM_TOOLS) == 14
 
     def test_all_tools_have_required_fields(self):
         for tool in DM_TOOLS:

@@ -1,0 +1,1 @@
+You didn't use any tools. Use narrate() to tell the players what's happening, request_group_input() to get their actions, or your other tools to progress the adventure. Plain text without tools is just internal notes — the players can't see it.

@@ -75,7 +75,7 @@ class BaseAgent:
             "max_tokens": self.settings.max_tokens,
             "system": self._add_cache_control(self.system_prompt),
             "messages": messages,
-            "timeout": 60.0,
+            "timeout": 120.0,
         }
         if use_tools and self.tools:
             kwargs["tools"] = self.tools
@@ -112,13 +112,14 @@ class BaseAgent:
 
         if not response.content:
             raise ValueError(f"Empty response from API for agent '{self.name}'")
-        first_block = response.content[0]
-        if not isinstance(first_block, TextBlock):
-            raise TypeError(
-                f"Expected TextBlock from API, got {type(first_block).__name__} "
-                f"for agent '{self.name}'"
-            )
-        assistant_text = first_block.text
+        # Find the first non-empty text block
+        assistant_text = ""
+        for block in response.content:
+            if isinstance(block, TextBlock) and block.text.strip():
+                assistant_text = block.text
+                break
+        if not assistant_text:
+            raise ValueError(f"No text content in API response for agent '{self.name}'")
         self.last_input_tokens = response.usage.input_tokens
         self.total_input_tokens += response.usage.input_tokens
         self.total_output_tokens += response.usage.output_tokens
@@ -138,6 +139,14 @@ class BaseAgent:
 
         response = self._make_api_call(messages, use_tools=True)
         return self._process_tool_response(response, user_message)
+
+    def snapshot_history(self) -> int:
+        """Save current history length for later rollback."""
+        return len(self.history)
+
+    def rollback_history(self, snapshot: int) -> None:
+        """Roll back history to a previous snapshot point."""
+        self.history = self.history[:snapshot]
 
     def submit_tool_results(self, tool_results: list[tuple[str, str]]) -> AgentResponse:
         """Submit tool results and get the next response.
@@ -160,18 +169,27 @@ class BaseAgent:
         return self._process_tool_response(response, result_content)
 
     def _process_tool_response(self, response, user_content) -> AgentResponse:
-        """Parse API response into AgentResponse and commit to history."""
-        if not response.content:
-            raise ValueError(f"Empty response from API for agent '{self.name}'")
+        """Parse API response into AgentResponse and commit to history.
+
+        Handles edge cases:
+        - Empty response (model had nothing to say after tool results)
+        - Empty text blocks (filtered out to avoid API rejection on next call)
+        - Ensures history always has valid content the API will accept
+        """
+        self.last_input_tokens = response.usage.input_tokens
+        self.total_input_tokens += response.usage.input_tokens
+        self.total_output_tokens += response.usage.output_tokens
 
         text_parts = []
         tool_calls = []
         raw_content = []
 
-        for block in response.content:
+        for block in (response.content or []):
             if isinstance(block, TextBlock):
-                text_parts.append(block.text)
-                raw_content.append({"type": "text", "text": block.text})
+                # Skip empty text blocks — API rejects them on subsequent calls
+                if block.text.strip():
+                    text_parts.append(block.text)
+                    raw_content.append({"type": "text", "text": block.text})
             elif isinstance(block, ToolUseBlock):
                 tool_calls.append(ToolCall(
                     id=block.id, name=block.name, arguments=block.input,
@@ -183,9 +201,9 @@ class BaseAgent:
                     "input": block.input,
                 })
 
-        self.last_input_tokens = response.usage.input_tokens
-        self.total_input_tokens += response.usage.input_tokens
-        self.total_output_tokens += response.usage.output_tokens
+        # Ensure assistant message is never empty (API requires valid content)
+        if not raw_content:
+            raw_content = [{"type": "text", "text": "(acknowledged)"}]
 
         # Commit to history
         self.history.append(Message(role="user", content=user_content))
@@ -203,6 +221,31 @@ class BaseAgent:
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
         }
+
+    def dump_history(self) -> str:
+        """Dump full conversation history as readable text for debugging."""
+        lines = [f"=== {self.name} conversation log ===\n"]
+        for msg in self.history:
+            role = msg.role.upper()
+            if isinstance(msg.content, str):
+                lines.append(f"--- {role} ---\n{msg.content}\n")
+            elif isinstance(msg.content, list):
+                parts = []
+                for block in msg.content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+                        elif block.get("type") == "tool_use":
+                            parts.append(
+                                f"[tool_use: {block.get('name')}({block.get('input', {})})]\n"
+                            )
+                        elif block.get("type") == "tool_result":
+                            content = block.get("content", "")
+                            parts.append(f"[tool_result: {content[:200]}]\n")
+                        elif block.get("type") == "image":
+                            parts.append("[image]\n")
+                lines.append(f"--- {role} ---\n{''.join(parts)}\n")
+        return "\n".join(lines)
 
     def reset(self) -> None:
         self.history.clear()

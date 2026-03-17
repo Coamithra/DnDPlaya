@@ -27,6 +27,22 @@ def get_output_dir() -> Path:
     return Path.cwd() / "output" / "runs"
 
 
+# Short aliases → full Anthropic model IDs
+MODEL_ALIASES: dict[str, str] = {
+    "haiku": "claude-haiku-4-5-20251001",
+    "haiku-4.5": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6-20250514",
+    "sonnet-4.6": "claude-sonnet-4-6-20250514",
+    "opus": "claude-opus-4-6-20250514",
+    "opus-4.6": "claude-opus-4-6-20250514",
+}
+
+
+def resolve_model(name: str) -> str:
+    """Resolve a model alias to its full ID, or pass through if already full."""
+    return MODEL_ALIASES.get(name.lower().strip(), name)
+
+
 class Settings(BaseModel):
     """Runtime settings for a playtesting session."""
 
@@ -34,7 +50,7 @@ class Settings(BaseModel):
         default_factory=lambda: SecretStr(os.getenv("ANTHROPIC_API_KEY", ""))
     )
     model: str = Field(
-        default_factory=lambda: os.getenv("DNDPLAYA_MODEL", "claude-haiku-4-5-20241022")
+        default_factory=lambda: resolve_model(os.getenv("DNDPLAYA_MODEL", "haiku"))
     )
     max_tokens: int = Field(default_factory=lambda: _env_int("DNDPLAYA_MAX_TOKENS", 2048))
     party_level: int = Field(default_factory=lambda: _env_int("DNDPLAYA_PARTY_LEVEL", 3))

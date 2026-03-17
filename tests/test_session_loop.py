@@ -7,7 +7,7 @@ from dndplaya.agents.base import AgentResponse, ToolCall
 from dndplaya.mechanics.characters import create_default_party
 from dndplaya.mechanics.dice import DiceRoller
 from dndplaya.mechanics.state import GameState
-from dndplaya.orchestrator.session import Session, _parse_urgency, _strip_urgency
+from dndplaya.orchestrator.session import Session
 from dndplaya.orchestrator.transcript import SessionTranscript
 from dndplaya.config import Settings
 from pydantic import SecretStr
@@ -52,6 +52,9 @@ class TestSessionToolDispatch:
         session._last_read_page = None
         session.module_references = []
         session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+
         return session
 
     def test_handle_ask_skill_check_success(self):
@@ -300,6 +303,9 @@ class TestProcessToolCalls:
         session._last_read_page = None
         session.module_references = []
         session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+
         return session
 
     def test_process_multiple_tool_calls(self):
@@ -318,13 +324,23 @@ class TestProcessToolCalls:
         assert results[1][0] == "tc_2"
         assert "Thorin" in results[1][1]
 
-    def test_narration_recorded_before_tools(self):
+    def test_dm_text_recorded_as_internal(self):
         session = self._make_session()
         response = _agent_response(
-            text="You enter a dark chamber.",
+            text="Let me think about this room...",
             tool_calls=[_tool_call("get_party_status", {})],
         )
         session._process_tool_calls(response)
+        system_events = [
+            e for e in session.transcript.entries
+            if e.entry_type == "system"
+        ]
+        assert any("DM internal:" in e.content for e in system_events)
+
+    def test_narrate_tool_records_narration(self):
+        session = self._make_session()
+        result = session._handle_narrate({"text": "You enter a dark chamber."})
+        assert result == "Narrated."
         narrations = [
             e for e in session.transcript.entries
             if e.entry_type == "narration"
@@ -358,6 +374,9 @@ class TestModuleReferenceTools:
         session._last_read_page = None
         session.module_references = []
         session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+
         return session
 
     # --- search_module ---
@@ -491,28 +510,6 @@ class TestModuleReferenceTools:
         assert len(session.module_references) == 3
 
 
-class TestUrgencyParsing:
-    """Test the urgency parsing and stripping utilities."""
-
-    def test_parse_urgency_from_text(self):
-        assert _parse_urgency("I attack! [URGENCY: 5]") == 5
-        assert _parse_urgency("Nothing to do [URGENCY: 1]") == 1
-        assert _parse_urgency("Some action [URGENCY: 3]") == 3
-
-    def test_parse_urgency_default(self):
-        assert _parse_urgency("No urgency tag here") == 3
-
-    def test_parse_urgency_clamped(self):
-        assert _parse_urgency("[URGENCY: 0]") == 1
-        assert _parse_urgency("[URGENCY: 10]") == 5
-
-    def test_strip_urgency(self):
-        assert _strip_urgency("I attack! [URGENCY: 5]") == "I attack!"
-        assert _strip_urgency("Hello [URGENCY: 3] world") == "Hello world"
-
-    def test_strip_urgency_no_tag(self):
-        assert _strip_urgency("No tag here") == "No tag here"
-
 
 class TestMonsterRegistration:
     """Test that roll_initiative properly registers monsters."""
@@ -535,6 +532,9 @@ class TestMonsterRegistration:
         session._last_read_page = None
         session.module_references = []
         session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+
         return session
 
     def test_monsters_registered_after_initiative(self):

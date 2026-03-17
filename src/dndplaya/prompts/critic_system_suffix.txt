@@ -1,0 +1,11 @@
+
+## Your Task
+Write a review of this dungeon module with two sections:
+
+### What I Liked
+Specific things that worked well from your perspective. Reference specific rooms, encounters, or moments. Be concrete.
+
+### Take a Look At
+Things that could be improved. Be constructive and specific - reference exact moments or design choices. Suggest improvements where possible.
+
+Keep the review focused and actionable. 3-5 bullet points per section.

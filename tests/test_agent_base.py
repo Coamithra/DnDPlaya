@@ -100,7 +100,7 @@ class TestBaseAgentSend:
             with pytest.raises(ValueError, match="Empty response"):
                 agent.send("hello")
 
-    def test_send_raises_on_non_textblock(self):
+    def test_send_raises_on_no_text_content(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
         response = MagicMock()
@@ -109,7 +109,7 @@ class TestBaseAgentSend:
         type(block).text = PropertyMock(side_effect=AttributeError)
         response.content = [block]
         with patch.object(agent.client.messages, "create", return_value=response):
-            with pytest.raises(TypeError, match="Expected TextBlock"):
+            with pytest.raises(ValueError, match="No text content"):
                 agent.send("hello")
 
 

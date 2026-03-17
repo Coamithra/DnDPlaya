@@ -1,30 +1,8 @@
 from __future__ import annotations
 
 from ..config import Settings
+from ..prompts import load_prompt
 from .base import BaseAgent
-
-CRITIC_SYSTEM_PROMPT_PREFIX = '''You are a D&D session reviewer. You've just finished playing through a dungeon module and need to write a review.
-
-## Your Perspective
-Name: {agent_name}
-Role: {role}
-{perspective}
-
-## Session Transcript
-'''
-
-CRITIC_SYSTEM_PROMPT_SUFFIX = '''
-
-## Your Task
-Write a review of this dungeon module with two sections:
-
-### What I Liked
-Specific things that worked well from your perspective. Reference specific rooms, encounters, or moments. Be concrete.
-
-### Take a Look At
-Things that could be improved. Be constructive and specific - reference exact moments or design choices. Suggest improvements where possible.
-
-Keep the review focused and actionable. 3-5 bullet points per section.'''
 
 
 class CriticAgent:
@@ -48,13 +26,14 @@ class CriticAgent:
 
         # Build system prompt without .format() on transcript to avoid crashes
         # on curly braces in LLM-generated transcript text.
-        prefix = CRITIC_SYSTEM_PROMPT_PREFIX.format(
+        prefix = load_prompt(
+            "critic_system_prefix",
             agent_name=agent_name,
             role=role,
             perspective=full_perspective,
         )
         # Use last ~5000 tokens of transcript for review context
-        system = prefix + transcript[-20000:] + CRITIC_SYSTEM_PROMPT_SUFFIX
+        system = prefix + transcript[-20000:] + load_prompt("critic_system_suffix")
 
         agent = BaseAgent(
             name=f"Critic_{agent_name}",
@@ -62,25 +41,14 @@ class CriticAgent:
             settings=self.settings,
         )
 
-        review = agent.send(
-            "Please write your review of this dungeon module based on your experience playing through it."
-        )
-        return review
+        return agent.send(load_prompt("critic_user"))
 
     def generate_dm_review(self, transcript: str, runnability_notes: list[str]) -> str:
         """Generate the DM's runnability review."""
         return self.generate_review(
             agent_name="DM",
             role="Dungeon Master",
-            perspective=(
-                "You ran this module as DM. Focus your review on RUNNABILITY:\n"
-                "- How clear were the room descriptions?\n"
-                "- Was information organized well?\n"
-                "- Were transitions between areas smooth?\n"
-                "- Did the module support improvisation?\n"
-                "- Were encounter tactics clear?\n"
-                "- Was the pacing good?"
-            ),
+            perspective=load_prompt("dm_runnability_perspective"),
             transcript=transcript,
             notes=runnability_notes,
         )

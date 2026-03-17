@@ -3,6 +3,43 @@ from __future__ import annotations
 
 DM_TOOLS = [
     {
+        "name": "narrate",
+        "description": (
+            "Speak to the players. ALL player-facing narration MUST go through "
+            "this tool — describe rooms, set scenes, roleplay NPCs, announce "
+            "outcomes. Any text you produce outside of this tool is treated as "
+            "internal DM notes that players cannot see."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "What you say to the players",
+                },
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "review_note",
+        "description": (
+            "Record a private runnability note for your post-session review. "
+            "Not shared with players. Use this to note unclear descriptions, "
+            "missing info, pacing issues, or anything you had to improvise."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Your runnability observation",
+                },
+            },
+            "required": ["text"],
+        },
+    },
+    {
         "name": "ask_skill_check",
         "description": (
             "Ask a player to make a skill check. The orchestrator rolls the dice "
@@ -111,6 +148,19 @@ DM_TOOLS = [
                 },
             },
             "required": ["monsters"],
+        },
+    },
+    {
+        "name": "next_combat_turn",
+        "description": (
+            "Advance to the next combatant in initiative order. "
+            "Automatically skips downed PCs. Wraps around to the top "
+            "when the end of the order is reached. "
+            "Use roll_initiative first to start combat."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
         },
     },
     {

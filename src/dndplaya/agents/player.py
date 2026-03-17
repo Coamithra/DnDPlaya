@@ -2,118 +2,29 @@ from __future__ import annotations
 
 from ..config import Settings
 from ..mechanics.characters import Character
+from ..prompts import load_prompt
 from .base import BaseAgent
 from .player_tools import PLAYER_TOOLS
 
-# MDA archetype definitions
+# MDA archetype definitions — prompt text loaded from prompts/archetype_*.txt
 ARCHETYPES = {
     "roleplayer": {
         "aesthetics": "Fantasy + Narrative",
         "focus": "Immersion, story hooks, NPC interaction, lore, atmosphere",
-        "prompt_addition": """You are deeply invested in the story and world. You:
-- Speak in character with a distinct voice
-- Seek out NPCs to talk to and lore to uncover
-- React emotionally to dramatic moments
-- Value atmosphere and immersion above tactical advantage
-- Try to understand motivations of enemies before fighting
-- Note when the world feels alive vs when it feels like a game
-
-When something breaks your immersion or when the story feels forced, make a mental note.
-When an NPC is memorable or the atmosphere is compelling, note that too.""",
     },
     "tactician": {
         "aesthetics": "Challenge",
         "focus": "Meaningful tactical choices, puzzles, resource decisions",
-        "prompt_addition": """You approach the dungeon as a puzzle to be solved optimally. You:
-- Analyze encounters for tactical opportunities
-- Coordinate with party members on strategy
-- Think about resource management (HP, spell slots, abilities)
-- Look for environmental advantages in combat
-- Appreciate well-designed encounters with multiple valid approaches
-- Get frustrated by encounters that feel like simple slugfests with no real choices
-
-Note when encounters offer meaningful tactical decisions vs when they're just damage races.
-Note when puzzles are satisfying vs arbitrary.""",
     },
     "explorer": {
         "aesthetics": "Discovery",
         "focus": "Secrets, hidden content, investigation rewards, curiosity payoff",
-        "prompt_addition": """You are driven by curiosity and the thrill of discovery. You:
-- Search everything - walls, floors, furniture, bodies
-- Take the less obvious path when given a choice
-- Investigate anything unusual or out of place
-- Ask probing questions about the environment
-- Value finding secrets, hidden rooms, and lore fragments
-- Get excited by rewards for thorough exploration
-
-Note when exploration is rewarded vs when there's nothing to find.
-Note when the dungeon has satisfying secrets vs when it feels linear.""",
     },
     "free_spirit": {
         "aesthetics": "Expression + Fellowship",
         "focus": "Creative solutions, teamwork, player agency",
-        "prompt_addition": """You value creative freedom and working with your party. You:
-- Try unconventional solutions to problems
-- Support other party members' ideas and build on them
-- Look for ways to use the environment creatively
-- Prefer negotiation or trickery over brute force when possible
-- Enjoy moments of party banter and camaraderie
-- Test the boundaries of what the dungeon allows
-
-Note when the dungeon supports creative solutions vs when it railroads.
-Note when teamwork feels organic vs forced.""",
     },
 }
-
-
-PLAYER_SYSTEM_PROMPT = '''You are a D&D player with the following character and play style.
-
-## Your Character
-Name: {char_name}
-Class: {char_class}
-Level: {char_level}
-HP: {char_hp}
-AC: {char_ac}
-
-### Skills
-{char_skills}
-
-## Your Play Style ({archetype_name})
-MDA Aesthetics: {aesthetics}
-Focus: {focus}
-
-{archetype_prompt}
-
-## How to Play
-- Respond to the DM's descriptions with what your character does
-- Declare actions clearly: "I attack the goblin", "I search the room", "I try to persuade the guard"
-- Stay in character but be concise - this is a game, keep it moving
-- Coordinate with your party when it makes sense for your character
-- You can ONLY act on information your character has - no metagaming
-
-## Tools
-You have two tools:
-- **attack(target)**: Attack a monster by name. The system resolves the hit/miss and damage.
-- **heal(target)**: Heal a party member by name. Costs a spell slot. The system resolves the amount.
-
-Use these tools to take mechanical actions during combat or when the situation calls for it.
-
-## Urgency
-End every response with `[URGENCY: X]` where X is 1-5:
-- **5** = You absolutely must speak now (you were addressed by name, it's your combat turn, something critical to your archetype)
-- **4** = You were directly addressed or have something important to add
-- **3** = You have something relevant to contribute
-- **2** = You could add something but it's not important
-- **1** = Nothing to add right now
-
-During someone else's combat turn, keep urgency at 1-2 unless something truly urgent happens.
-When the DM addresses you by name, rate 4-5.
-
-## Internal Notes
-While playing, silently note moments that engage or frustrate you through your archetype's lens.
-These will be used for your review later. Don't mention them in-character.
-
-Respond as your character would. Keep responses to 2-4 sentences in exploration, 1-2 in combat.'''
 
 
 class PlayerAgent(BaseAgent):
@@ -144,7 +55,10 @@ class PlayerAgent(BaseAgent):
         else:
             char_skills = "No special skill bonuses"
 
-        system = PLAYER_SYSTEM_PROMPT.format(
+        archetype_prompt = load_prompt(f"archetype_{archetype}")
+
+        system = load_prompt(
+            "player_system",
             char_name=character.name,
             char_class=character.char_class,
             char_level=character.level,
@@ -154,13 +68,16 @@ class PlayerAgent(BaseAgent):
             archetype_name=archetype.replace("_", " ").title(),
             aesthetics=self.archetype_info["aesthetics"],
             focus=self.archetype_info["focus"],
-            archetype_prompt=self.archetype_info["prompt_addition"],
+            archetype_prompt=archetype_prompt,
         )
+
+        # Players use lower max_tokens — they should be 1-3 sentences
+        player_settings = settings.model_copy(update={"max_tokens": min(512, settings.max_tokens)})
 
         super().__init__(
             name=character.name,
             system_prompt=system,
-            settings=settings,
+            settings=player_settings,
             tools=PLAYER_TOOLS,
         )
 

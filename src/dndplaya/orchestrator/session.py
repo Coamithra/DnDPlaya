@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass, field
-
-from rich.console import Console
+from pathlib import Path
 
 from ..config import Settings
 from ..mechanics.state import GameState, EventType
@@ -14,11 +14,10 @@ from ..agents.dm import DMAgent
 from ..agents.player import PlayerAgent, ARCHETYPES
 from ..agents.base import AgentResponse
 from ..agents.context import compact_history
+from ..prompts import load_prompt
 from .transcript import SessionTranscript
 
-console = Console()
-
-MAX_TOTAL_TURNS = 100
+DEFAULT_MAX_TURNS = 100
 
 DIFFICULTY_DC = {
     "very_easy": 5,
@@ -28,12 +27,6 @@ DIFFICULTY_DC = {
     "very_hard": 20,
     "nearly_impossible": 25,
 }
-
-SESSION_START = """The party arrives at the dungeon entrance. The adventurers are:
-{party_description}
-
-Begin the adventure. Search or read the module for the entrance area, \
-then describe what the party sees and set the scene."""
 
 
 class Session:
@@ -48,6 +41,8 @@ class Session:
         seed: int | None = None,
         pages: list[str] | None = None,
         summary: str = "",
+        max_turns: int = DEFAULT_MAX_TURNS,
+        log_path: Path | None = None,
     ):
         self.settings = settings
         self.dice = DiceRoller(seed=seed or settings.seed)
@@ -65,6 +60,10 @@ class Session:
 
         # Active monsters (registered via roll_initiative)
         self._active_monsters: dict[str, Monster] = {}
+
+        # Initiative tracking
+        self._initiative_order: list[tuple[str, int, str]] = []  # (name, roll, "PC"|"Monster")
+        self._initiative_index: int = -1  # -1 = not started
 
         # Create DM agent — use summary if available, otherwise full markdown
         if summary:
@@ -94,19 +93,40 @@ class Session:
             self.players.append(player)
             self._player_map[character.name.lower()] = player
 
-        self.transcript = SessionTranscript()
+        self.max_turns = max_turns
+        self.transcript = SessionTranscript(log_path=log_path)
         self.total_turns = 0
         self._terminated = False
+
+        # Write module summary + party info to transcript header
+        if summary:
+            self.transcript.add_system_event(f"MODULE SUMMARY:\n\n{summary}")
+        party_info = "\n".join(
+            f"- {c.name} ({c.char_class} L{c.level}): {c.max_hp} HP, AC {c.ac}"
+            for c in self.party
+        )
+        self.transcript.add_system_event(f"PARTY:\n\n{party_info}")
 
     def _is_party_dead(self) -> bool:
         """Check if all party members are dead (TPK)."""
         return not self.state.get_alive_characters()
 
+    # --- Live ticker output ---
+
+    def _tick(self, speaker: str, detail: str = "") -> None:
+        """Print a compact progress tick: Speaker(turn) or Speaker(turn):detail."""
+        tag = f"{speaker}({self.total_turns})"
+        if detail:
+            tag += f":{detail}"
+        print(f" {tag}", end="", flush=True)
+
+    def _event(self, text: str) -> None:
+        """Print a notable event on its own line."""
+        print(f"\n  >> {text}", end="", flush=True)
+
     def run(self) -> SessionResult:
         """Run the complete session via DM conversation loop."""
-        console.print("[bold green]Starting session...[/bold green]")
-        console.print(f"Party: {', '.join(c.name for c in self.party)}")
-        console.print()
+        print(f"Session start | Party: {', '.join(c.name for c in self.party)}", flush=True)
 
         try:
             # Build opening prompt
@@ -115,19 +135,18 @@ class Session:
                 f"{c.max_hp} HP, AC {c.ac}"
                 for c in self.party
             )
-            opening = SESSION_START.format(party_description=party_desc)
+            opening = load_prompt("session_start", party_description=party_desc)
 
             # First DM turn
             compact_history(self.dm)
             response = self.dm.send_with_tools(opening)
             self.total_turns += 1
+            self._tick("DM")
 
             # Main conversation loop
-            while not self._terminated and self.total_turns < MAX_TOTAL_TURNS:
+            while not self._terminated and self.total_turns < self.max_turns:
                 if self._is_party_dead():
-                    console.print(
-                        "[bold red]Total Party Kill — session ending.[/bold red]"
-                    )
+                    self._event("TPK!")
                     self.transcript.add_system_event(
                         "Session ended: Total Party Kill."
                     )
@@ -143,31 +162,30 @@ class Session:
                     compact_history(self.dm)
                     response = self.dm.submit_tool_results(tool_results)
                     self.total_turns += 1
+                    self._tick("DM")
                 else:
-                    # DM just narrated without tools — record and prompt to continue
+                    # DM produced text without tools — internal thinking, nudge to use tools
                     if response.text:
-                        self.transcript.add_dm_narration(response.text)
-                        console.print("  [dim]DM narrates[/dim]")
+                        self.transcript.add_system_event(f"DM internal: {response.text}")
 
                     compact_history(self.dm)
                     response = self.dm.send_with_tools(
-                        "Continue the adventure. Use your tools to progress — "
-                        "request_group_input to get player actions, search the "
-                        "module, ask for skill checks, etc."
+                        load_prompt("session_continue")
                     )
                     self.total_turns += 1
+                    self._tick("DM")
 
-            if self.total_turns >= MAX_TOTAL_TURNS:
+            if self.total_turns >= self.max_turns:
                 warning = (
-                    f"Session truncated: reached {MAX_TOTAL_TURNS} turn limit."
+                    f"Session truncated: reached {self.max_turns} turn limit."
                 )
-                console.print(f"\n[bold yellow]{warning}[/bold yellow]")
+                self._event(warning)
                 self.transcript.add_system_event(warning)
 
-            console.print("\n[bold green]Session complete![/bold green]")
+            print(f"\nSession complete! ({self.total_turns} turns)", flush=True)
 
         except Exception as e:
-            console.print(f"\n[bold red]Session error: {e}[/bold red]")
+            print(f"\nSession error: {e}", flush=True)
             self.transcript.add_system_event(
                 f"Session ended early due to error: {e}"
             )
@@ -180,10 +198,9 @@ class Session:
         """Process all tool calls from a DM response."""
         results = []
 
-        # Record any narration text before tool calls
+        # Any free text from the DM is internal thoughts (not narration)
         if response.text:
-            self.transcript.add_dm_narration(response.text)
-            console.print("  [dim]DM narrates[/dim]")
+            self.transcript.add_system_event(f"DM internal: {response.text}")
 
         for tc in response.tool_calls:
             result = self._dispatch_tool(tc.name, tc.arguments)
@@ -194,10 +211,13 @@ class Session:
     def _dispatch_tool(self, name: str, args: dict) -> str:
         """Dispatch a single tool call to the appropriate handler."""
         handlers = {
+            "narrate": self._handle_narrate,
+            "review_note": self._handle_dm_review_note,
             "ask_skill_check": self._handle_ask_skill_check,
             "attack": self._handle_attack,
             "change_hp": self._handle_change_hp,
             "roll_initiative": self._handle_roll_initiative,
+            "next_combat_turn": self._handle_next_combat_turn,
             "request_group_input": self._handle_request_group_input,
             "get_party_status": self._handle_get_party_status,
             "end_session": self._handle_end_session,
@@ -212,9 +232,27 @@ class Session:
         try:
             return handler(args)
         except Exception as e:
+            self.transcript.add_system_event(f"ERROR in {name}: {e}")
+            self._event(f"ERROR {name}: {e}")
+            self._terminated = True
             return f"Error: {e}"
 
     # --- New combat/skill handlers ---
+
+    def _handle_narrate(self, args: dict) -> str:
+        """DM narrates to the players."""
+        text = args.get("text", "")
+        if text:
+            self.transcript.add_dm_narration(text)
+        return "Narrated."
+
+    def _handle_dm_review_note(self, args: dict) -> str:
+        """DM records a private runnability note."""
+        text = args.get("text", "")
+        if text:
+            self.dm.add_runnability_note(text)
+            self.transcript.add_system_event(f"DM review note: {text}")
+        return "Noted."
 
     def _handle_ask_skill_check(self, args: dict) -> str:
         player_name = args.get("player", "")
@@ -254,7 +292,8 @@ class Session:
             actor=player_name,
         )
         self.transcript.add_system_event(f"Skill check: {text}")
-        console.print(f"    [dim]{text}[/dim]")
+        symbol = "+" if success else "-"
+        self._event(f"{symbol}{player_name} {skill} DC{dc} ({total})")
         return text
 
     def _handle_attack(self, args: dict) -> str:
@@ -294,14 +333,14 @@ class Session:
                 f"({status})"
             )
             self.transcript.add_system_event(text)
-            console.print(f"    [red]{text}[/red]")
+            self._event(f"{attacker_name}->>{target_name} {damage}dmg ({status})")
         else:
             text = (
                 f"MISS: {attacker_name} misses {target_name} "
                 f"(rolled {total} vs AC {char.ac})"
             )
             self.transcript.add_system_event(text)
-            console.print(f"    [dim]{text}[/dim]")
+            self._event(f"{attacker_name}->>{target_name} miss")
 
         return text
 
@@ -337,7 +376,7 @@ class Session:
             status += " (DOWN!)"
 
         self.transcript.add_system_event(status)
-        console.print(f"    [dim]{status}[/dim]")
+        self._event(status)
         return status
 
     def _handle_roll_initiative(self, args: dict) -> str:
@@ -345,8 +384,12 @@ class Session:
         if not monsters_data:
             return "No monsters specified."
 
-        # Create and register monsters
+        # Clear any prior combat state
         self._active_monsters.clear()
+        self._initiative_order.clear()
+        self._initiative_index = -1
+
+        # Create and register monsters
         created_monsters = []
         for m_data in monsters_data:
             name = m_data.get("name", "Unknown")
@@ -359,24 +402,23 @@ class Session:
                 return f"Error creating monster '{name}': {e}"
 
         # Roll initiative for PCs
-        initiative_order: list[tuple[str, int, str]] = []
         for char in self.state.get_alive_characters():
             roll = self.dice.d20() + char.initiative_bonus
-            initiative_order.append((char.name, roll, "PC"))
+            self._initiative_order.append((char.name, roll, "PC"))
 
         # Roll initiative for monsters (use attack_bonus // 2 as dex proxy)
         for monster in created_monsters:
             roll = self.dice.d20() + monster.attack_bonus // 2
-            initiative_order.append((monster.name, roll, "Monster"))
+            self._initiative_order.append((monster.name, roll, "Monster"))
 
         # Sort descending
-        initiative_order.sort(key=lambda x: x[1], reverse=True)
+        self._initiative_order.sort(key=lambda x: x[1], reverse=True)
 
         self.state.in_combat = True
 
         # Format result
         lines = ["Initiative order:"]
-        for i, (name, roll, side) in enumerate(initiative_order, 1):
+        for i, (name, roll, side) in enumerate(self._initiative_order, 1):
             if side == "Monster":
                 m = self._active_monsters.get(name.lower())
                 extra = f" (CR {m.cr}, {m.max_hp} HP, AC {m.ac})" if m else ""
@@ -386,13 +428,50 @@ class Session:
 
         text = "\n".join(lines)
         self.transcript.add_system_event(text)
-        console.print(f"    [dim]{text}[/dim]")
+        names = [name for name, _, side in self._initiative_order]
+        self._event(f"Initiative: {' > '.join(names)}")
         return text
+
+    def _handle_next_combat_turn(self, args: dict) -> str:
+        """Advance to the next combatant in initiative order, skipping downed PCs."""
+        if not self._initiative_order:
+            return "No combat in progress. Use roll_initiative first."
+
+        order_len = len(self._initiative_order)
+        # Try each slot once; if everyone is skipped we've gone full circle
+        for _ in range(order_len):
+            self._initiative_index = (self._initiative_index + 1) % order_len
+            name, roll, side = self._initiative_order[self._initiative_index]
+
+            # Auto-skip downed PCs (monster deaths are DM-tracked)
+            if side == "PC":
+                char = self.state.get_character(name)
+                if char and char.current_hp <= 0:
+                    continue
+
+            position = self._initiative_index + 1
+            if side == "Monster":
+                m = self._active_monsters.get(name.lower())
+                extra = f" (CR {m.cr}, AC {m.ac})" if m else ""
+                text = f"Turn {position}/{order_len}: {name}{extra} (Monster)"
+            else:
+                char = self.state.get_character(name)
+                hp_str = f"{char.current_hp}/{char.max_hp} HP" if char else ""
+                text = f"Turn {position}/{order_len}: {name} (PC, {hp_str})"
+
+            self.transcript.add_system_event(f"Combat turn: {text}")
+            self._tick(name, side[:1])
+            return text
+
+        # All PCs downed and only monsters remain — shouldn't normally reach here
+        return "No living combatants to take a turn."
 
     # --- Player interaction ---
 
     def _handle_request_group_input(self, args: dict) -> str:
-        """Investment/urgency-based group input system."""
+        """Conversational group input with urgency-based turn selection."""
+        self.transcript.add_system_event("--- REQUEST GROUP INPUT ---")
+        URGENCY_THRESHOLDS = [1, 2, 3, 3, 4, 4, 5]
         dm_context = self.transcript.get_recent_dm_narration()
         alive_players = [
             (p, self.state.get_character(p.character.name))
@@ -404,89 +483,159 @@ class Session:
         if not alive_players:
             return "All players are unconscious."
 
-        # --- Round 1: All players respond ---
-        round1_responses: list[tuple[str, str, int, list[str]]] = []
+        # --- Round 1: All players respond to DM context ---
+        # Players compact at 20k tokens (they only need recent context, not full history)
+        round1_responses: list[tuple[PlayerAgent, str, int, list[str]]] = []
         for player, char in alive_players:
-            compact_history(player)
+            compact_history(player, max_tokens=20000)
             response = player.send_with_tools(dm_context)
-            text, mechanical_results = self._resolve_player_tools(
-                player, response
-            )
-            urgency = _parse_urgency(text)
-            display_text = _strip_urgency(text)
-            self.transcript.add_player_action(player.character.name, display_text)
-            console.print(f"  [dim]{player.character.name} responds (urgency {urgency})[/dim]")
-            round1_responses.append(
-                (player.character.name, display_text, urgency, mechanical_results)
-            )
+            text, urgency, mechanical = self._resolve_player_tools(player, response)
+            self._tick(player.character.name)
+            round1_responses.append((player, text, urgency, mechanical))
 
-        # Sort by urgency descending
+        # Sort by urgency — winner starts the thread (random tiebreaker)
+        random.shuffle(round1_responses)
         round1_responses.sort(key=lambda x: x[2], reverse=True)
 
-        # --- Rounds 2-3: Follow-up ---
-        all_responses = list(round1_responses)
-        if len(round1_responses) > 1:
-            primary_name, primary_text, _, _ = round1_responses[0]
-            followup_prompt = (
-                f"{primary_name} says: '{primary_text}'. "
-                f"Do you want to add anything? Say 'pass' if not."
+        # Log all round 1 responses with urgency
+        self.transcript.add_system_event(
+            "Round 1 urgency: " + ", ".join(
+                f"{p.character.name}={u}" for p, _, u, _ in round1_responses
             )
-            for round_num in range(2, 4):
-                new_responses = []
-                for player, char in alive_players:
-                    if player.character.name == primary_name:
-                        continue
-                    # Skip if already responded with low urgency or "pass"
-                    compact_history(player)
-                    response = player.send_with_tools(followup_prompt)
-                    text, mechanical_results = self._resolve_player_tools(
-                        player, response
+        )
+
+        winner = round1_responses[0]
+        thread: list[tuple[str, str, list[str]]] = [
+            (winner[0].character.name, winner[1], winner[3])
+        ]
+        self.transcript.add_player_action(winner[0].character.name, winner[1])
+
+        # Log all losing round 1 responses
+        for player, text, urgency, mechanical in round1_responses[1:]:
+            self.transcript.add_discarded_response(
+                player.character.name,
+                f"[urgency {urgency}] {text}",
+                urgency,
+            )
+
+        last_speaker = winner[0].character.name
+
+        # --- Follow-up rounds: everyone except last speaker ---
+        for _round, min_urgency in enumerate(URGENCY_THRESHOLDS):
+            # Build the conversation so far as a prompt
+            thread_lines = [dm_context, ""]
+            for name, text, _ in thread:
+                thread_lines.append(f"{name}: {text}")
+            thread_lines.append("")
+            thread_lines.append(load_prompt("player_followup"))
+            followup_prompt = "\n".join(thread_lines)
+
+            # Ask everyone except the last speaker (ephemeral — don't grow history)
+            follow_responses: list[tuple[PlayerAgent, str, int, list[str]]] = []
+            passed: list[str] = []
+            for player, char in alive_players:
+                if player.character.name == last_speaker:
+                    continue
+                snap = player.snapshot_history()
+                response = player.send_with_tools(followup_prompt)
+                text, urgency, mechanical = self._resolve_player_tools(
+                    player, response
+                )
+                player.rollback_history(snap)  # ephemeral — don't grow history
+                self._tick(player.character.name)
+                if text == "pass" or not text.strip():
+                    passed.append(player.character.name)
+                    self.transcript.add_discarded_response(
+                        player.character.name, "*(pass)*", 0
                     )
-                    urgency = _parse_urgency(text)
-                    display_text = _strip_urgency(text)
-                    if urgency >= 3 and display_text.lower().strip() != "pass":
-                        self.transcript.add_player_action(
-                            player.character.name, display_text
-                        )
-                        new_responses.append(
-                            (player.character.name, display_text, urgency, mechanical_results)
-                        )
-                if not new_responses:
-                    break
-                all_responses.extend(new_responses)
-                # Build next followup from new responses
-                followup_parts = [
-                    f"{name}: {text}" for name, text, _, _ in new_responses
-                ]
-                followup_prompt = (
-                    "\n".join(followup_parts) + "\n"
-                    "Do you want to add anything? Say 'pass' if not."
+                else:
+                    follow_responses.append(
+                        (player, text, urgency, mechanical)
+                    )
+
+            # Everyone passed → done
+            if not follow_responses:
+                self.transcript.add_system_event(
+                    f"All players passed. Thread complete ({len(thread)} messages)."
+                )
+                break
+
+            # Log urgency summary for this follow-up round
+            all_this_round = [(p.character.name, u) for p, _, u, _ in follow_responses]
+            all_this_round += [(n, 0) for n in passed]
+            self.transcript.add_system_event(
+                f"Follow-up round {_round + 1}: "
+                + ", ".join(f"{n}={u}" for n, u in all_this_round)
+            )
+
+            # Pick highest urgency as winner — must meet rising threshold
+            random.shuffle(follow_responses)
+            follow_responses.sort(key=lambda x: x[2], reverse=True)
+            if follow_responses[0][2] < min_urgency:
+                self.transcript.add_system_event(
+                    f"No response met urgency threshold {min_urgency}. Thread complete."
+                )
+                break
+            fw = follow_responses[0]
+            thread.append((fw[0].character.name, fw[1], fw[3]))
+            self.transcript.add_player_action(fw[0].character.name, fw[1])
+
+            # Log losing follow-up responses
+            for player, text, urgency, mechanical in follow_responses[1:]:
+                self.transcript.add_discarded_response(
+                    player.character.name,
+                    f"[urgency {urgency}] {text}",
+                    urgency,
                 )
 
-        # --- Bundle result ---
+            last_speaker = fw[0].character.name
+        else:
+            self.transcript.add_system_event(
+                f"Group input hit {len(URGENCY_THRESHOLDS)} round cap."
+            )
+
+        # --- Bundle the thread for the DM ---
         result_lines = ["Player responses:"]
-        for name, text, _, mechanical in all_responses:
+        for name, text, mechanical in thread:
             result_lines.append(f"{name}: {text}")
             for mech in mechanical:
                 result_lines.append(f"[{mech}]")
 
-        result = "\n".join(result_lines)
-        console.print(f"  [dim]Group input collected ({len(all_responses)} responses)[/dim]")
-        return result
+        return "\n".join(result_lines)
 
     def _resolve_player_tools(
         self, player: PlayerAgent, response: AgentResponse
-    ) -> tuple[str, list[str]]:
-        """Process player tool calls (attack/heal) and return text + mechanical results."""
+    ) -> tuple[str, int, list[str]]:
+        """Process player tool calls. Returns (text, urgency, mechanical_results)."""
         mechanical_results: list[str] = []
+        say_text = ""
+        urgency = 3  # default
+        has_pass = False
 
         if not response.tool_calls:
-            return response.text, mechanical_results
+            # Fallback: player responded with plain text instead of tools
+            return response.text, urgency, mechanical_results
 
         # Process tool calls
         tool_results_for_api: list[tuple[str, str]] = []
         for tc in response.tool_calls:
-            if tc.name == "attack":
+            if tc.name == "say":
+                say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', tc.arguments.get("text", "")).strip()
+                urgency = tc.arguments.get("urgency", 3)
+                urgency = max(1, min(5, urgency))
+                tool_results_for_api.append((tc.id, "Said."))
+            elif tc.name == "pass_turn":
+                has_pass = True
+                tool_results_for_api.append((tc.id, "You passed your turn."))
+            elif tc.name == "review_note":
+                note = tc.arguments.get("text", "")
+                if note:
+                    player.add_engagement_note(note)
+                    self.transcript.add_system_event(
+                        f"{player.character.name} review note: {note}"
+                    )
+                tool_results_for_api.append((tc.id, "Noted."))
+            elif tc.name == "attack":
                 result = self._resolve_player_attack(player, tc.arguments)
                 mechanical_results.append(result)
                 tool_results_for_api.append((tc.id, result))
@@ -497,12 +646,45 @@ class Session:
             else:
                 tool_results_for_api.append((tc.id, f"Unknown tool: {tc.name}"))
 
-        # Submit results back to player to get final text
-        if tool_results_for_api:
-            final_response = player.submit_tool_results(tool_results_for_api)
-            return final_response.text, mechanical_results
+        # Submit results back to player — drain any follow-up tool calls
+        # This loop ensures ALL tool_use blocks get matching tool_result blocks,
+        # preventing "tool_use ids without tool_result" API errors on future calls.
+        max_drain = 5  # safety valve
+        while tool_results_for_api and max_drain > 0:
+            max_drain -= 1
+            followup = player.submit_tool_results(tool_results_for_api)
+            if not followup.tool_calls:
+                break
+            # Model responded with more tool calls — process them
+            tool_results_for_api = []
+            for tc in followup.tool_calls:
+                if tc.name == "say" and not say_text:
+                    say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', tc.arguments.get("text", "")).strip()
+                    urgency = max(1, min(5, tc.arguments.get("urgency", 3)))
+                    tool_results_for_api.append((tc.id, "Said."))
+                elif tc.name == "pass_turn":
+                    has_pass = True
+                    tool_results_for_api.append((tc.id, "You passed your turn."))
+                elif tc.name == "review_note":
+                    note = tc.arguments.get("text", "")
+                    if note:
+                        player.add_engagement_note(note)
+                    tool_results_for_api.append((tc.id, "Noted."))
+                elif tc.name == "attack":
+                    result = self._resolve_player_attack(player, tc.arguments)
+                    mechanical_results.append(result)
+                    tool_results_for_api.append((tc.id, result))
+                elif tc.name == "heal":
+                    result = self._resolve_player_heal(player, tc.arguments)
+                    mechanical_results.append(result)
+                    tool_results_for_api.append((tc.id, result))
+                else:
+                    tool_results_for_api.append((tc.id, f"Unknown tool: {tc.name}"))
 
-        return response.text, mechanical_results
+        if has_pass:
+            return "pass", 0, mechanical_results
+
+        return say_text, urgency, mechanical_results
 
     def _resolve_player_attack(self, player: PlayerAgent, args: dict) -> str:
         """Resolve a player's attack against a monster."""
@@ -527,7 +709,10 @@ class Session:
                 f"MISS (rolled {total} vs AC {monster.ac})"
             )
         self.transcript.add_system_event(result)
-        console.print(f"    [dim]{result}[/dim]")
+        if success:
+            self._event(f"{char.name}->>{target_name} {damage}dmg")
+        else:
+            self._event(f"{char.name}->>{target_name} miss")
         return result
 
     def _resolve_player_heal(self, player: PlayerAgent, args: dict) -> str:
@@ -568,7 +753,7 @@ class Session:
             f"({target_char.current_hp}/{target_char.max_hp})"
         )
         self.transcript.add_system_event(result)
-        console.print(f"    [green]{result}[/green]")
+        self._event(f"{char.name} heals {target_name} +{actual}HP")
         return result
 
     # --- Unchanged handlers ---
@@ -608,7 +793,8 @@ class Session:
             "query": query,
             "turn": self.total_turns,
         })
-        console.print(f"    [dim]DM searches module: \"{query}\"[/dim]")
+        self._tick("DM", f"search:{query[:20]}")
+        self.transcript.add_system_event(f"DM searches module: \"{query}\"")
 
         matches = []
         query_lower = query.lower()
@@ -648,7 +834,8 @@ class Session:
             "page": page_number,
             "turn": self.total_turns,
         })
-        console.print(f"    [dim]DM reads page {page_number}[/dim]")
+        self._tick("DM", f"p{page_number}")
+        self.transcript.add_system_event(f"DM reads page {page_number}")
         return f"--- Page {page_number} ---\n{self.pages[page_number - 1]}"
 
     def _handle_next_page(self, args: dict) -> str:
@@ -677,7 +864,7 @@ class Session:
         reason = args.get("reason", "Adventure complete")
         self._terminated = True
         self.transcript.add_system_event(f"Session ended: {reason}")
-        console.print(f"[bold green]Session ended: {reason}[/bold green]")
+        self._event(f"Session ended: {reason}")
         return f"Session ended: {reason}"
 
     def _build_result(self) -> SessionResult:
@@ -694,18 +881,6 @@ class Session:
             module_references=self.module_references,
         )
 
-
-def _parse_urgency(text: str) -> int:
-    """Extract urgency rating from player response text."""
-    match = re.search(r'\[URGENCY:\s*(\d+)\]', text)
-    if match:
-        return max(1, min(5, int(match.group(1))))
-    return 3  # default
-
-
-def _strip_urgency(text: str) -> str:
-    """Remove the [URGENCY: X] tag from text."""
-    return re.sub(r'\s*\[URGENCY:\s*\d+\]', '', text).strip()
 
 
 @dataclass

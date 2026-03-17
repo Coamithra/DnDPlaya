@@ -1,0 +1,1 @@
+IMPORTANT: You haven't asked the players what they want to do in a while. Call request_group_input now to get their actions before continuing. Do not speak for the players or decide their actions — they must respond themselves.

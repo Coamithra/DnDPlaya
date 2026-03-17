@@ -114,6 +114,15 @@ python -m pytest tests/test_config.py -v             # Settings/config
 
 Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer, data models, agent base + tool use + prompt caching (mocked API), session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/TPK), DM + player tool schema validation, urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, and edge cases. No API key needed for tests.
 
+## TODO (from playtesting sessions)
+
+1. **Cost optimization** — players eat 90% of tokens via follow-up history resend. Fix: ephemeral follow-ups, urgency ramp, lower player max_tokens
+2. **Transcript readability** — needs better formatting, module summary at top, explicit group input markers
+3. **Random tiebreaker** — same-urgency responses always pick first in list, should randomize
+4. **Log group input calls** — add explicit "request_group_input called" markers in transcript
+5. **`consult_map` tool** — Haiku struggles with map images; a text-based map description tool could help
+6. **HTML session viewer** — interactive playback with collapsible losing replies, prompt inspector, tool usage (see memory/project_html_viewer.md)
+
 ## Dependencies
 
 Runtime: `anthropic`, `pymupdf4llm`, `pydantic`, `python-dotenv`, `click`, `rich`

@@ -10,7 +10,7 @@ from dndplaya.config import Settings, _env_int
 def test_settings_defaults():
     """Settings should have sensible defaults when no env vars are set."""
     s = Settings()
-    assert s.model == "claude-haiku-4-5-20241022"
+    assert s.model == "claude-haiku-4-5-20251001"
     assert s.max_tokens == 2048
     assert s.party_level == 3
     assert s.seed is None

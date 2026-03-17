@@ -1,0 +1,4 @@
+The party arrives at the dungeon entrance. The adventurers are:
+{party_description}
+
+Begin the adventure. Search or read the module for the entrance area, then describe what the party sees and set the scene. If the module has relevant rumors, hooks, or goals, pick some and brief the party. This this is a one-shot adventure you can briefly narrate through your chosen hook and how it involves the party - be creative!

@@ -5,6 +5,9 @@ from dndplaya.agents.player_tools import PLAYER_TOOLS
 
 
 EXPECTED_TOOL_NAMES = [
+    "say",
+    "pass_turn",
+    "review_note",
     "attack",
     "heal",
 ]
@@ -16,7 +19,7 @@ class TestPlayerTools:
         assert tool_names == EXPECTED_TOOL_NAMES
 
     def test_tool_count(self):
-        assert len(PLAYER_TOOLS) == 2
+        assert len(PLAYER_TOOLS) == 5
 
     def test_all_tools_have_required_fields(self):
         for tool in PLAYER_TOOLS:
