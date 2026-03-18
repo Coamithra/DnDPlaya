@@ -1115,24 +1115,6 @@ class TestNonAsciiDetection:
     def test_ascii_only(self):
         assert not _has_excessive_non_ascii("Hello, world!")
 
-    def test_non_english_player_say_treated_as_pass(self):
-        """say() with Chinese text should be treated as pass."""
-        session = self._make_session()
-        player = MagicMock()
-        player.character = session.party[0]
-        player.submit_tool_results.return_value = _agent_response()
-
-        response = _agent_response(
-            tool_calls=[_tool_call("say", {
-                "text": "圣洁之人请给予我一个征兆或洞察",
-                "urgency": 3,
-            })],
-            stop_reason="tool_use",
-        )
-        text, urgency, mechanical = session._resolve_player_tools(player, response)
-        assert text == "pass"
-        assert urgency == 0
-
     def _make_session(self):
         settings = _make_settings()
         party = create_default_party(3)

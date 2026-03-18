@@ -1165,14 +1165,6 @@ class Session:
                         )
                         say_text = say_text[:dm_match.start()].strip()
 
-                # Provider guardrail: Language detection — strip non-English content
-                if g.detect_non_ascii and say_text and _has_excessive_non_ascii(say_text, g.non_ascii_threshold):
-                    self._event(f"WARN: {player.character.name} non-English content — stripped")
-                    self.transcript.add_system_event(
-                        f"{player.character.name} sent non-English content — stripped."
-                    )
-                    say_text = ""
-
                 # Empty say() treated as pass (checked BEFORE incrementing tool count)
                 if not say_text:
                     has_pass = True
@@ -1247,11 +1239,6 @@ class Session:
                             if dm_match:
                                 self._event(f"WARN: {player.character.name} role-confused (drain)")
                                 candidate = candidate[:dm_match.start()].strip()
-
-                        # Provider guardrail: Language detection in drain loop
-                        if g.detect_non_ascii and candidate and _has_excessive_non_ascii(candidate, g.non_ascii_threshold):
-                            self._event(f"WARN: {player.character.name} non-English content (drain)")
-                            candidate = ""
 
                         # Empty say in drain loop (checked BEFORE incrementing tool count)
                         if not candidate:
