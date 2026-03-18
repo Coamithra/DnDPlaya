@@ -225,7 +225,7 @@ class Session:
             # First DM turn
             if self.ui:
                 self.ui.thinking_start("dm")
-            compact_history(self.dm)
+            compact_history(self.dm, self._guardrails.compaction_threshold)
             response = self.dm.send_with_tools(opening)
             if self.ui:
                 self.ui.thinking_stop("dm")
@@ -291,7 +291,7 @@ class Session:
 
                     if self.ui:
                         self.ui.thinking_start("dm")
-                    compact_history(self.dm)
+                    compact_history(self.dm, self._guardrails.compaction_threshold)
                     response = self.dm.submit_tool_results(tool_results)
                     if self.ui:
                         self.ui.thinking_stop("dm")
@@ -324,7 +324,7 @@ class Session:
                                 summary += _stale_nudge
                             if self.ui:
                                 self.ui.thinking_start("dm")
-                            compact_history(self.dm)
+                            compact_history(self.dm, self._guardrails.compaction_threshold)
                             response = self.dm.send_with_tools(summary)
                             if self.ui:
                                 self.ui.thinking_stop("dm")
@@ -346,7 +346,7 @@ class Session:
                         nudge_msg += _stale_nudge
                     if self.ui:
                         self.ui.thinking_start("dm")
-                    compact_history(self.dm)
+                    compact_history(self.dm, self._guardrails.compaction_threshold)
                     response = self.dm.send_with_tools(nudge_msg)
                     if self.ui:
                         self.ui.thinking_stop("dm")

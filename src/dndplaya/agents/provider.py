@@ -102,6 +102,18 @@ class ProviderGuardrails:
     non_ascii_threshold: float = 0.30
     """Fraction of non-ASCII chars that triggers the language guard."""
 
+    context_window: int = 200_000
+    """Model context window in tokens. Used to set compaction thresholds."""
+
+    @property
+    def compaction_threshold(self) -> int:
+        """Token count at which history compaction should trigger.
+
+        Set to ~75% of the context window to leave headroom for the
+        system prompt, tool definitions, and the next response.
+        """
+        return int(self.context_window * 0.75)
+
 
 # ── Normalised response ─────────────────────────────────────────────
 
@@ -333,6 +345,7 @@ class OllamaProvider:
             drain_loop_cap=5,
             detect_role_confusion=True,
             detect_non_ascii=True,
+            context_window=32_000,  # conservative default for local models
         )
 
     @property
