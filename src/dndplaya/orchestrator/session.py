@@ -805,6 +805,7 @@ class Session:
                 self.ui.thinking_start(pkey)
 
             player.set_cached_context(chat)
+            snapshot = player.snapshot_history()
 
             # Remind the player what they already said (prevents repetition)
             name = player.character.name
@@ -821,6 +822,27 @@ class Session:
                 )
 
             response = player.send_with_tools(prompt)
+
+            # Provider guardrail: if the response is non-English,
+            # roll back history (erase the bad exchange) and resend.
+            # Players have no persistent history (set_cached_context rebuilds
+            # it each call), so rollback is safe and cheap.
+            g = self._guardrails
+            if g.detect_non_ascii:
+                # Check both free text and say() tool arguments
+                texts_to_check = []
+                if response.text:
+                    texts_to_check.append(response.text)
+                for rtc in response.tool_calls:
+                    if rtc.name == "say":
+                        texts_to_check.append(str(rtc.arguments.get("text", "")))
+                combined = " ".join(texts_to_check)
+                if combined.strip() and _has_excessive_non_ascii(combined, g.non_ascii_threshold):
+                    self._event(f"WARN: {name} non-English — rollback + retry")
+                    player.rollback_history(snapshot)
+                    player.set_cached_context(chat)
+                    prompt_retry = prompt + "\n\nIMPORTANT: Respond in English only."
+                    response = player.send_with_tools(prompt_retry)
 
             # Resolve tools (includes drain loop with submit_tool_results).
             # The lock protects dice rolls and game-state writes inside
@@ -1143,32 +1165,13 @@ class Session:
                         )
                         say_text = say_text[:dm_match.start()].strip()
 
-                # Provider guardrail: Language detection — retry then strip
+                # Provider guardrail: Language detection — strip non-English content
                 if g.detect_non_ascii and say_text and _has_excessive_non_ascii(say_text, g.non_ascii_threshold):
-                    self._event(f"WARN: {player.character.name} non-English — requesting retry")
-                    # Ask the player to retry in English
-                    retry_resp = player.submit_tool_results([
-                        (tc.id, "Your response was not in English. Respond in English only.")
-                    ])
-                    retried = False
-                    if retry_resp.tool_calls:
-                        for rtc in retry_resp.tool_calls:
-                            if rtc.name == "say":
-                                retry_text = rtc.arguments.get("text", "")
-                                if isinstance(retry_text, str):
-                                    retry_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', retry_text).strip()
-                                if retry_text and not _has_excessive_non_ascii(retry_text, g.non_ascii_threshold):
-                                    say_text = retry_text
-                                    raw_urg = rtc.arguments.get("urgency", 3)
-                                    urgency = max(1, min(5, int(raw_urg) if isinstance(raw_urg, (int, float)) else 3))
-                                    retried = True
-                                    self._event(f"  {player.character.name} retried in English OK")
-                                    break
-                    if not retried:
-                        self.transcript.add_system_event(
-                            f"{player.character.name} sent non-English content — stripped."
-                        )
-                        say_text = ""
+                    self._event(f"WARN: {player.character.name} non-English content — stripped")
+                    self.transcript.add_system_event(
+                        f"{player.character.name} sent non-English content — stripped."
+                    )
+                    say_text = ""
 
                 # Empty say() treated as pass (checked BEFORE incrementing tool count)
                 if not say_text:
