@@ -39,7 +39,7 @@ def _char_key(name: str) -> str:
 class ValidationResult:
     """Outcome of validating a player response."""
 
-    status: str  # "ok", "fixed", "needsretry"
+    status: str  # "ok", "fixed", "needs_retry"
     response: AgentResponse | None = None  # set when status == "fixed"
     hint: str = ""  # correction hint appended to prompt on retry
 
@@ -841,7 +841,7 @@ class Session:
                 if result.status == "fixed":
                     response = result.response  # use cleaned-up version
                     break
-                # needsretry — roll back and resend with correction hint
+                # needs_retry — roll back and resend with correction hint
                 player.rollback_history(snapshot)
                 player.set_cached_context(chat)
                 prompt += f"\n\n{result.hint}"
@@ -1130,7 +1130,7 @@ class Session:
     def _validate_player_response(
         self, player: PlayerAgent, response: AgentResponse,
     ) -> ValidationResult:
-        """Validate a player response. Returns ok / fixed / needsretry."""
+        """Validate a player response. Returns ok / fixed / needs_retry."""
         g = self._guardrails
         name = player.character.name
 
@@ -1143,12 +1143,12 @@ class Session:
                 all_text.append(str(tc.arguments.get("text", "")))
         combined = " ".join(all_text)
 
-        # --- Non-ASCII: entire response is unsalvageable → needsretry ---
+        # --- Non-ASCII: entire response is unsalvageable → needs_retry ---
         if g.detect_non_ascii and combined.strip():
             if _has_excessive_non_ascii(combined, g.non_ascii_threshold):
                 self._event(f"WARN: {name} non-English — needs retry")
                 return ValidationResult(
-                    status="needsretry",
+                    status="needs_retry",
                     hint="IMPORTANT: Respond in English only.",
                 )
 
