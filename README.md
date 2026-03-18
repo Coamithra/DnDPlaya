@@ -11,7 +11,7 @@ The DM reads a pre-game summary, references the module by page during play, narr
 ### Prerequisites
 
 - Python 3.11+
-- An [Anthropic API key](https://console.anthropic.com/)
+- An [Anthropic API key](https://console.anthropic.com/) **or** [Ollama](https://ollama.com/) for free local inference
 
 ### Install
 
@@ -50,6 +50,40 @@ dir =                  # leave empty for default (./output/runs)
 ```
 
 CLI flags override INI values. `.env` is for secrets only (API key).
+
+### Local Model via Ollama (free)
+
+Run sessions entirely locally with no API key or cost. Install [Ollama](https://ollama.com/), pull a model, and point DnDPlaya at it:
+
+```bash
+# 1. Install Ollama (see https://ollama.com/download)
+# 2. Pull a model (qwen2.5:14b recommended -- ~9 GB, fits in 16 GB VRAM)
+ollama pull qwen2.5:14b
+
+# 3. Run a session
+dndplaya run dungeon.pdf --provider ollama --ollama-model qwen2.5:14b
+dndplaya ui dungeon.pdf --provider ollama   # web UI works too
+```
+
+Or set it as default in `dndplaya.ini`:
+
+```ini
+[session]
+provider = ollama
+ollama_model = qwen2.5:14b
+ollama_url = http://localhost:11434
+```
+
+**How it works:** `OllamaProvider` speaks the OpenAI-compatible API that Ollama exposes at `/v1`. It translates Anthropic message/tool formats to OpenAI on every call, extracts tool calls from text when the model doesn't use the function-calling API natively, and validates tool call arguments with retry (up to 2 retries with error feedback).
+
+**Guardrails:** Local models are less reliable than Anthropic models. The orchestrator has automatic defensive checks (declared per-provider via `ProviderGuardrails`): non-English response detection with rollback + retry, role confusion stripping ("DM:" in player responses), drain loop caps to prevent runaway hallucination, and empty say rejection. These only activate for Ollama -- Anthropic runs are unaffected.
+
+**Model recommendations:**
+- `qwen2.5:14b` -- fits in 16 GB VRAM, functional but struggles with tool use
+- Larger models (32b+) should perform better if you have the VRAM
+- Any Ollama model that supports the OpenAI-compatible chat API will work
+
+**Test runner:** `python runbook.py` runs a quick Ollama session (12 turns) and prints the output directory -- useful for iterating on prompt/guardrail changes.
 
 ## Usage
 
@@ -104,6 +138,8 @@ All flags are optional -- they override `dndplaya.ini` values:
 | `--music DIR` | Music directory path (ui only) |
 | `--no-reviews` | Disable review_note tools (ui only) |
 | `--thinking` | Enable extended thinking (ui only) |
+| `--provider NAME` | `anthropic` (default) or `ollama` |
+| `--ollama-model NAME` | Ollama model name (default: `qwen2.5:14b`) |
 
 ## How It Works
 
@@ -132,9 +168,12 @@ PDF --> Summarizer --> DM Agent (summary + page reference tools)
 
 ```bash
 pip install -e ".[dev]"       # Install with dev dependencies
-python -m pytest tests/ -v    # Run all tests (236 tests, no API key needed)
+python -m pytest tests/ -v    # Run all tests (300 tests, no API key needed)
 ```
 
 ## Cost
 
-With `claude-haiku-4-5` (default), a typical session costs $0.50-1.00. Prompt caching reduces this significantly. Use `--no-reviews` (or set in INI) to save tokens during testing.
+- **Anthropic (Haiku):** ~$0.50-1.00/session. Prompt caching reduces this significantly.
+- **Ollama:** Free. Runs locally on your GPU. Session quality depends on model size.
+
+Use `--no-reviews` (or set in INI) to save tokens during testing.

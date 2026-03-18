@@ -11,11 +11,15 @@ vi dndplaya.ini               # Tweak session settings (provider, model, music, 
 dndplaya run dungeon.pdf      # Run a playtest (console)
 dndplaya ui dungeon.pdf       # Run with live web UI (opens browser)
 dndplaya parse dungeon.pdf    # Test PDF parsing only
-python -m pytest tests/ -v    # Run tests (254 tests)
+python -m pytest tests/ -v    # Run tests (300 tests)
 
 # Run with local Ollama (free):
 ollama pull qwen2.5:14b       # Download model (~9 GB)
 dndplaya run dungeon.pdf --provider ollama --ollama-model qwen2.5:14b
+
+# Runbook — automated test session runner for Ollama:
+python runbook.py              # Run session with qwen (12 turns default)
+python runbook.py --max-turns 20
 ```
 
 ## Configuration
@@ -56,9 +60,10 @@ The DM agent receives a pre-game summary (not the full module) and uses page-bas
 
 - `src/dndplaya/mechanics/` — D&D Lite: seeded dice (incl. expression parser for "2d6+3"), character/monster stats with skills + initiative bonuses, game state tracking. CombatResolver kept for legacy/`parse` path.
 - `src/dndplaya/pdf/` — PDF→Markdown (pymupdf4llm) + image extraction (pymupdf) + page-aware extraction (`pages.py`), regex-based chunking into rooms/encounters (used by `parse` command)
-- `src/dndplaya/agents/provider.py` — LLM provider abstraction: `AnthropicProvider` (prompt caching, thinking, retry) and `OllamaProvider` (OpenAI-compatible API, tool validation + retry). `create_provider(settings)` factory.
+- `src/dndplaya/agents/provider.py` — LLM provider abstraction: `AnthropicProvider` (prompt caching, thinking, retry) and `OllamaProvider` (OpenAI-compatible API, tool validation + retry). `create_provider(settings)` factory. Each provider declares a `ProviderGuardrails` dataclass controlling defensive checks (drain loop cap, non-ASCII detection, role confusion detection).
+- `runbook.py` — Automated Ollama session runner for test-and-improve cycles. Runs `dndplaya run` with qwen, prints output directory. Used with Claude Code agents for analysis and code improvement.
 - `src/dndplaya/agents/` — LLM agent layer with provider abstraction + tool use + prompt caching + optional extended thinking, DM agent (summary + 11 tools + optional `change_music`), player agents (2 tools + urgency), pre-game summarizer, 4 MDA archetype player agents, post-session critic
-- `src/dndplaya/orchestrator/` — DM conversation loop with tool dispatch, investment/urgency-based group input (parallel player API calls via ThreadPoolExecutor), player tool resolution, monster tracking, transcript recording, TPK detection, reference metric tracking, live agent log dumping
+- `src/dndplaya/orchestrator/` — DM conversation loop with tool dispatch, investment/urgency-based group input (parallel player API calls via ThreadPoolExecutor), player response validation (`_validate_player_response` → ok/fixed/needs_retry), player tool resolution (`_resolve_player_tools` — pure game engine), monster tracking, transcript recording, TPK detection, reference metric tracking, live agent log dumping
 - `src/dndplaya/feedback/` — Narrative generation, per-agent "What I Liked / Take a Look At" reviews with error recovery
 - `src/dndplaya/cli.py` — Click CLI: `run`, `parse`, `report`, `ui` commands; CLI flags override INI settings
 - `dndplaya.ini` — INI config file for session/UI/output defaults (loaded by `config.py`)
@@ -110,7 +115,10 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **Players have no persistent history**: Each player call rebuilds from the cached chat via `set_cached_context()`. Only winning responses are appended to the chat. This keeps the prefix stable for cache hits and avoids polluting the model's context with discarded attempts.
 - **High compaction threshold**: Context compaction at 150k tokens (emergency-only with Haiku's 200k window, DM only). Players don't use compaction — they use the cached chat approach instead.
 - **Early outs**: Session aborts on: DM stuck (5 consecutive no-tool turns), no narration (15 turns), cost budget exceeded ($3), with cache health warning (0 reads after 10 turns).
-- **Ollama defensive guardrails**: Local models (especially qwen2.5:14b) struggle with tool use, urgency, and staying on-topic. Mechanical guardrails in the orchestrator: (1) per-player drain loop cap (5 tool calls max) prevents runaway hallucination loops, (2) empty say() rejection treats blank/whitespace say calls as pass_turn without consuming a tool call slot, (3) role confusion detection strips "DM:" content from player responses, (4) non-ASCII language detection strips responses with >30% non-ASCII chars (catches Chinese/Russian/Thai language switching), (5) all-pass auto-advance nudges the DM to advance the story after 2 consecutive all-pass group inputs instead of re-asking, (6) stale narration detection nudges the DM to use module reference tools after 3 turns without any search_module/read_page calls, (7) heal-at-full-HP guard preserves spell slots instead of healing for 0 HP, (8) summarizer post-validation checks if summary keywords match the PDF filename and prepends a warning if not.
+- **Player response validation (`_validate_player_response`)**: Three-outcome validation before tool processing: `ok` (clean, proceed), `fixed` (cleaned up in-place, proceed with fixed version), `needs_retry` (unsalvageable, rollback history and resend with correction hint). The retry loop in `_call()` runs up to 3 attempts. Validation checks: (1) non-ASCII language detection (>30% non-ASCII → `needs_retry` with "Respond in English only"), (2) role confusion ("DM:" in say text → `fixed`, strip everything after it), (3) empty say (blank/whitespace → `fixed`, convert to `pass_turn`). After validation, `_resolve_player_tools` is pure game engine — no content checks.
+- **ProviderGuardrails (OO)**: `ProviderGuardrails` dataclass on the `LLMProvider` protocol declares what defensive guardrails a provider needs. `AnthropicProvider` → no guardrails. `OllamaProvider` → `drain_loop_cap=5`, `detect_role_confusion=True`, `detect_non_ascii=True`. Session reads `self._guardrails` (from `dm.provider.guardrails`). Provider-specific checks (non-ASCII, role confusion, drain cap) only fire when the provider requests them. Universal checks (empty say, heal guard, stale narration, all-pass advance) always fire.
+- **Drain loop cap**: Per-player tool call cap in the drain loop (5 for Ollama, unlimited for Anthropic). Prevents runaway hallucination where the model calls say() endlessly in follow-up rounds. Empty says don't count toward the cap.
+- **Session-level guardrails (all providers)**: (1) all-pass auto-advance nudges the DM to advance the story after 2 consecutive all-pass group inputs, (2) stale narration detection nudges the DM to use module reference tools after 3 turns without any search_module/read_page calls, (3) heal-at-full-HP guard preserves spell slots instead of healing for 0 HP.
 - **Summarizer anti-hallucination**: The summarizer prompt includes strong anti-fabrication instructions and accepts an optional `pdf_filename` parameter. After generation, `_validate_summary()` checks extracted filename keywords against the summary text. If no keywords match, a warning is prepended. The CLI passes `pdf_filename=Path(pdf_path).name` to the summarizer.
 - **DM-driven architecture**: DM receives a pre-game summary + map images, references specific pages during play via tools. No BFS room traversal or programmatic combat resolution. DM instructed never to narrate PC actions — only describe world, NPCs, monsters, and outcomes.
 - **Page-based module reference**: Instead of stuffing the full module into the system prompt, the DM gets a summary and uses `search_module`/`read_page`/`next_page`/`previous_page` to look up details. Module reference frequency is tracked as a metric.
@@ -129,7 +137,7 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 ## Testing
 
 ```bash
-python -m pytest tests/ -v                           # All 301 tests
+python -m pytest tests/ -v                           # All 300 tests
 python -m pytest tests/test_characters.py -v         # Character creation + skills
 python -m pytest tests/test_combat.py -v             # Combat only
 python -m pytest tests/test_pdf_chunker.py -v        # PDF parsing only
@@ -145,7 +153,7 @@ python -m pytest tests/test_config.py -v             # Settings/config
 python -m pytest tests/test_provider_ollama.py -v    # Ollama provider: message/tool translation, validation
 ```
 
-Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer (incl. anti-hallucination validation + keyword extraction), data models, agent base + tool use + prompt caching (mocked provider), Ollama provider message/tool format translation + tool validation + config, session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, Ollama guardrails (empty say rejection, role confusion detection, non-ASCII detection, drain loop cap, all-pass auto-advance, heal-at-full-HP guard), and edge cases. No API key needed for tests.
+Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer (incl. anti-hallucination validation + keyword extraction), data models, agent base + tool use + prompt caching (mocked provider), Ollama provider message/tool format translation + tool validation + config, session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, player response validation (empty say→pass_turn, role confusion DM: stripping, non-ASCII detection), drain loop cap, all-pass auto-advance, heal-at-full-HP guard, summarizer keyword validation, and edge cases. No API key needed for tests.
 
 ## TODO (from playtesting sessions)
 
