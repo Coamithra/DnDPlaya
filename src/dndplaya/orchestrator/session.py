@@ -821,15 +821,18 @@ class Session:
                     + " / ".join(f'"{p[:80]}"' for p in prior)
                 )
 
-            response = player.send_with_tools(prompt)
-
             # Provider guardrail: if the response is non-English,
             # roll back history (erase the bad exchange) and resend.
             # Players have no persistent history (set_cached_context rebuilds
             # it each call), so rollback is safe and cheap.
             g = self._guardrails
-            if g.detect_non_ascii:
-                # Check both free text and say() tool arguments
+            max_lang_retries = 2 if g.detect_non_ascii else 0
+            for _attempt in range(1 + max_lang_retries):
+                response = player.send_with_tools(prompt)
+
+                if not g.detect_non_ascii:
+                    break
+
                 texts_to_check = []
                 if response.text:
                     texts_to_check.append(response.text)
@@ -837,12 +840,14 @@ class Session:
                     if rtc.name == "say":
                         texts_to_check.append(str(rtc.arguments.get("text", "")))
                 combined = " ".join(texts_to_check)
-                if combined.strip() and _has_excessive_non_ascii(combined, g.non_ascii_threshold):
-                    self._event(f"WARN: {name} non-English — rollback + retry")
-                    player.rollback_history(snapshot)
-                    player.set_cached_context(chat)
-                    prompt_retry = prompt + "\n\nIMPORTANT: Respond in English only."
-                    response = player.send_with_tools(prompt_retry)
+
+                if not combined.strip() or not _has_excessive_non_ascii(combined, g.non_ascii_threshold):
+                    break  # clean response
+
+                self._event(f"WARN: {name} non-English (attempt {_attempt + 1}) — rollback + retry")
+                player.rollback_history(snapshot)
+                player.set_cached_context(chat)
+                prompt += "\n\nIMPORTANT: Respond in English only."
 
             # Resolve tools (includes drain loop with submit_tool_results).
             # The lock protects dice rolls and game-state writes inside
