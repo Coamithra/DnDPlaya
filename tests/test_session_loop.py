@@ -811,10 +811,11 @@ class TestEmptySayRejection:
 
 
 class TestRoleConfusionDetection:
-    """Fix 4: Player responses containing 'DM:' should be stripped."""
+    """Fix 4: Player responses containing 'DM:' should be stripped (Ollama only)."""
 
     def _make_session(self):
         settings = _make_settings()
+        settings.provider = "ollama"  # Ollama-only guardrail
         party = create_default_party(3)
         session = Session.__new__(Session)
         session.settings = settings
@@ -896,10 +897,11 @@ class TestRoleConfusionDetection:
 
 
 class TestDrainLoopCap:
-    """Fix 3: Per-player drain loop should be capped at 5 tool calls."""
+    """Fix 3: Per-player drain loop should be capped at 5 tool calls (Ollama only)."""
 
     def _make_session(self):
         settings = _make_settings()
+        settings.provider = "ollama"  # Ollama-only guardrail
         party = create_default_party(3)
         session = Session.__new__(Session)
         session.settings = settings
@@ -1083,7 +1085,7 @@ class TestAllPassAutoAdvance:
 
 
 class TestNonAsciiDetection:
-    """Iter 3 Fix 4: detect and strip non-English content from player responses."""
+    """Iter 3 Fix 4: detect and strip non-English content from player responses (Ollama only)."""
 
     def test_pure_english_below_threshold(self):
         assert not _has_excessive_non_ascii("I search the room carefully.")
@@ -1125,6 +1127,7 @@ class TestNonAsciiDetection:
 
     def _make_session(self):
         settings = _make_settings()
+        settings.provider = "ollama"  # Ollama-only guardrail
         party = create_default_party(3)
         session = Session.__new__(Session)
         session.settings = settings

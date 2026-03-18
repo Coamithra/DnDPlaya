@@ -1117,7 +1117,9 @@ class Session:
             return text, urgency, mechanical_results
 
         # Process tool calls
-        tool_call_count = 0  # Fix 3: per-player drain loop cap
+        # Ollama-only guardrails: local models need tighter constraints
+        _is_ollama = self.settings.provider == "ollama"
+        tool_call_count = 0  # per-player drain loop cap (Ollama only)
         MAX_TOOL_CALLS_PER_PLAYER = 5
 
         tool_results_for_api: list[tuple[str, str]] = []
@@ -1128,25 +1130,26 @@ class Session:
                     raw_text = str(raw_text)
                 say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
 
-                # Fix 4: Role confusion — strip hallucinated DM responses
-                dm_match = re.search(r'\bDM:', say_text)
-                if dm_match:
-                    self._event(f"WARN: {player.character.name} role-confused (DM: in say)")
-                    self.transcript.add_system_event(
-                        f"Role confusion detected: {player.character.name} "
-                        "hallucinated DM response — stripped."
-                    )
-                    say_text = say_text[:dm_match.start()].strip()
+                # Ollama-only: Role confusion — strip hallucinated DM responses
+                if _is_ollama:
+                    dm_match = re.search(r'\bDM:', say_text)
+                    if dm_match:
+                        self._event(f"WARN: {player.character.name} role-confused (DM: in say)")
+                        self.transcript.add_system_event(
+                            f"Role confusion detected: {player.character.name} "
+                            "hallucinated DM response — stripped."
+                        )
+                        say_text = say_text[:dm_match.start()].strip()
 
-                # Iter 3 Fix 4: Language detection — strip non-English content
-                if say_text and _has_excessive_non_ascii(say_text):
+                # Ollama-only: Language detection — strip non-English content
+                if _is_ollama and say_text and _has_excessive_non_ascii(say_text):
                     self._event(f"WARN: {player.character.name} non-English content detected — treated as pass")
                     self.transcript.add_system_event(
                         f"{player.character.name} sent non-English content — stripped."
                     )
                     say_text = ""
 
-                # Fix 2: Empty say() treated as pass (checked BEFORE incrementing tool count)
+                # Empty say() treated as pass (checked BEFORE incrementing tool count)
                 if not say_text:
                     has_pass = True
                     tool_results_for_api.append((tc.id, "Empty say — treated as pass."))
@@ -1189,8 +1192,8 @@ class Session:
         # Fix 3: hard cap on total tool calls per player per group input round.
         max_drain = 5  # safety valve
         while tool_results_for_api and max_drain > 0:
-            # Fix 3: stop draining if we've hit the per-player cap
-            if tool_call_count >= MAX_TOOL_CALLS_PER_PLAYER:
+            # Ollama-only: stop draining if we've hit the per-player cap
+            if _is_ollama and tool_call_count >= MAX_TOOL_CALLS_PER_PLAYER:
                 self._event(f"WARN: {player.character.name} hit {MAX_TOOL_CALLS_PER_PLAYER}-tool cap")
                 self.transcript.add_system_event(
                     f"{player.character.name} hit per-player tool call cap "
@@ -1214,18 +1217,19 @@ class Session:
                             raw_text = str(raw_text)
                         candidate = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
 
-                        # Fix 4: Role confusion in drain loop
-                        dm_match = re.search(r'\bDM:', candidate)
-                        if dm_match:
-                            self._event(f"WARN: {player.character.name} role-confused (drain)")
-                            candidate = candidate[:dm_match.start()].strip()
+                        # Ollama-only: Role confusion in drain loop
+                        if _is_ollama:
+                            dm_match = re.search(r'\bDM:', candidate)
+                            if dm_match:
+                                self._event(f"WARN: {player.character.name} role-confused (drain)")
+                                candidate = candidate[:dm_match.start()].strip()
 
-                        # Iter 3 Fix 4: Language detection in drain loop
-                        if candidate and _has_excessive_non_ascii(candidate):
+                        # Ollama-only: Language detection in drain loop
+                        if _is_ollama and candidate and _has_excessive_non_ascii(candidate):
                             self._event(f"WARN: {player.character.name} non-English content (drain)")
                             candidate = ""
 
-                        # Fix 2: Empty say in drain loop (checked BEFORE incrementing tool count)
+                        # Empty say in drain loop (checked BEFORE incrementing tool count)
                         if not candidate:
                             has_pass = True
                             tool_results_for_api.append((tc.id, "Empty say — treated as pass."))
