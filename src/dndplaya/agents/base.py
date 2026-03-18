@@ -3,7 +3,7 @@ from __future__ import annotations
 import time as _time
 
 import anthropic
-from anthropic.types import MessageParam, TextBlock, ToolUseBlock
+from anthropic.types import MessageParam, TextBlock, ToolUseBlock, ThinkingBlock
 from dataclasses import dataclass, field
 
 from ..config import Settings
@@ -46,6 +46,8 @@ class BaseAgent:
         system_prompt: str | list,
         settings: Settings,
         tools: list | None = None,
+        enable_thinking: bool = False,
+        thinking_budget: int = 500,
     ):
         self.name = name
         self.system_prompt = system_prompt
@@ -58,6 +60,9 @@ class BaseAgent:
         self.total_cache_read_tokens = 0
         self.last_input_tokens = 0  # tokens from the most recent API call
         self.tools = tools
+        self.enable_thinking = enable_thinking
+        self.thinking_budget = thinking_budget
+        self.last_thinking: str | None = None  # most recent thinking block
 
     def _record_usage(self, response) -> None:
         """Record token usage from an API response, including cache metrics."""
@@ -92,6 +97,13 @@ class BaseAgent:
         }
         if use_tools and self.tools:
             kwargs["tools"] = self.tools
+        if self.enable_thinking:
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.thinking_budget,
+            }
+            # Extended thinking requires max_tokens > budget_tokens
+            kwargs["max_tokens"] = max(kwargs["max_tokens"], self.thinking_budget + 2048)
 
         last_error: Exception | None = None
         for attempt in range(self.MAX_RETRIES):
@@ -223,9 +235,18 @@ class BaseAgent:
         text_parts = []
         tool_calls = []
         raw_content = []
+        self.last_thinking = None
 
         for block in (response.content or []):
-            if isinstance(block, TextBlock):
+            if isinstance(block, ThinkingBlock):
+                self.last_thinking = block.thinking
+                # Include the full block dict (with signature) for history round-trip
+                raw_content.append({
+                    "type": "thinking",
+                    "thinking": block.thinking,
+                    "signature": block.signature,
+                })
+            elif isinstance(block, TextBlock):
                 # Skip empty text blocks — API rejects them on subsequent calls
                 if block.text.strip():
                     text_parts.append(block.text)
@@ -275,7 +296,11 @@ class BaseAgent:
                 parts = []
                 for block in msg.content:
                     if isinstance(block, dict):
-                        if block.get("type") == "text":
+                        if block.get("type") == "thinking":
+                            parts.append(
+                                f"[thinking]\n{block.get('thinking', '')}\n[/thinking]\n"
+                            )
+                        elif block.get("type") == "text":
                             parts.append(block.get("text", ""))
                         elif block.get("type") == "tool_use":
                             parts.append(

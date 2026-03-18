@@ -197,6 +197,69 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 
 @cli.command()
 @click.argument("pdf_path", type=click.Path(exists=True))
+@click.option("--level", default=None, type=click.IntRange(1, 11), help="Party level 1-11")
+@click.option("--seed", default=None, type=int, help="Random seed")
+@click.option("--max-turns", default=None, type=click.IntRange(1), help="Max DM turns (default: 100)")
+@click.option("--port", default=8080, type=int, help="Web server port")
+@click.option("--thinking", is_flag=True, default=False, help="Enable extended thinking for player agents (debugging)")
+def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None, port: int, thinking: bool):
+    """Run a playtesting session with live web UI."""
+    from .ui.server import start_ui
+
+    settings = Settings()
+    settings.ensure_api_key()
+
+    if level is not None:
+        settings.party_level = level
+    if seed is not None:
+        settings.seed = seed
+
+    console.print(f"DnDPlaya UI | Model: {settings.model}")
+
+    # Extract PDF content
+    console.print("Extracting PDF...")
+    markdown = extract_pdf_to_markdown(pdf_path)
+    images = extract_pdf_images(pdf_path)
+    pages = extract_pages(pdf_path)
+    console.print(f"  {len(markdown):,} chars, {len(pages)} pages, {len(images)} images")
+
+    # Generate pre-game module summary
+    console.print("Generating module summary...")
+    summary = generate_module_summary(markdown, settings)
+    console.print(f"  {len(summary):,} chars")
+
+    # Create output dir for transcript
+    from datetime import datetime as _dt
+    timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = settings.output_dir / f"{timestamp}_ui"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / "transcript.md"
+
+    party = create_default_party(settings.party_level)
+
+    def session_factory(emitter):
+        kwargs = dict(
+            module_markdown=markdown,
+            settings=settings,
+            map_images=images,
+            party=party,
+            seed=seed,
+            pages=pages,
+            summary=summary,
+            log_path=log_path,
+            ui=emitter,
+            enable_thinking=thinking,
+        )
+        if max_turns is not None:
+            kwargs["max_turns"] = max_turns
+        return Session(**kwargs)
+
+    console.print(f"Starting UI on http://localhost:{port}")
+    start_ui(session_factory, port=port, log_dir=run_dir)
+
+
+@cli.command()
+@click.argument("pdf_path", type=click.Path(exists=True))
 def parse(pdf_path: str):
     """Test PDF parsing only - shows extracted structure."""
     console.print("[bold]Parsing PDF...[/bold]")

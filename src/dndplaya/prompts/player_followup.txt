@@ -1,1 +1,1 @@
-Do you want to add anything? It's fine to just say 'pass' and let the action play out.
+Do you want to add anything NEW? Don't repeat what you or others already said above — if you've already declared an action, pass_turn() instead. It's fine to just pass and let the action play out.

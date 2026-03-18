@@ -69,6 +69,7 @@ class Character(BaseModel):
     abilities: list[str] = Field(default_factory=list)
     skills: dict[str, int] = Field(default_factory=dict)
     initiative_bonus: int = 0
+    pronouns: str = "he/him"
 
 
 # Skill proficiency by class: "high" = prof + 3, "medium" = prof + 1
@@ -162,7 +163,7 @@ def compute_spell_slots(char_class: str, level: int) -> dict[int, int]:
     return slots
 
 
-def create_character(name: str, char_class: str, level: int) -> Character:
+def create_character(name: str, char_class: str, level: int, pronouns: str = "he/him") -> Character:
     """Create a character from the CLASS_STATS table."""
     if char_class not in CLASS_STATS:
         raise ValueError(f"Unknown class: {char_class}. Choose from: {list(CLASS_STATS.keys())}")
@@ -190,14 +191,15 @@ def create_character(name: str, char_class: str, level: int) -> Character:
         abilities=[],
         skills=skills,
         initiative_bonus=initiative_bonus,
+        pronouns=pronouns,
     )
 
 
 def create_default_party(level: int) -> list[Character]:
     """Create the standard four-member party at the given level."""
     return [
-        create_character("Thorin", "Fighter", level),
-        create_character("Shadow", "Rogue", level),
-        create_character("Elara", "Wizard", level),
-        create_character("Brother Marcus", "Cleric", level),
+        create_character("Thorin", "Fighter", level, pronouns="he/him"),
+        create_character("Shadow", "Rogue", level, pronouns="he/him"),
+        create_character("Elara", "Wizard", level, pronouns="she/her"),
+        create_character("Brother Marcus", "Cleric", level, pronouns="he/him"),
     ]

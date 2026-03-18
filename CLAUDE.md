@@ -7,7 +7,8 @@ AI-powered D&D dungeon playtesting tool. Feed it a dungeon module PDF, and a par
 ```bash
 pip install -e ".[dev]"       # Install dependencies
 cp .env.example .env          # Add ANTHROPIC_API_KEY
-dndplaya run dungeon.pdf      # Run a playtest
+dndplaya run dungeon.pdf      # Run a playtest (console)
+dndplaya ui dungeon.pdf       # Run with live web UI (opens browser)
 dndplaya parse dungeon.pdf    # Test PDF parsing only
 python -m pytest tests/ -v    # Run tests (226 tests)
 ```
@@ -45,7 +46,8 @@ The DM agent receives a pre-game summary (not the full module) and uses page-bas
 - `src/dndplaya/agents/` — Claude API wrapper with retry logic + tool use + prompt caching, DM agent (summary + 11 tools), player agents (2 tools + urgency), pre-game summarizer, 4 MDA archetype player agents, post-session critic
 - `src/dndplaya/orchestrator/` — DM conversation loop with tool dispatch, investment/urgency-based group input, player tool resolution, monster tracking, transcript recording, TPK detection, reference metric tracking
 - `src/dndplaya/feedback/` — Narrative generation, per-agent "What I Liked / Take a Look At" reviews with error recovery
-- `src/dndplaya/cli.py` — Click CLI: `run`, `parse`, `report` commands with input validation
+- `src/dndplaya/cli.py` — Click CLI: `run`, `parse`, `report`, `ui` commands with input validation
+- `src/dndplaya/ui/` — Web-based live session viewer: aiohttp server + WebSocket + HTML/CSS/JS frontend with thought bubbles, speech bubbles, and typewriter text animation
 
 ## DM Tools
 
@@ -95,6 +97,7 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **PDF parsing**: Image extraction (≥200x200px) for map images sent to DM. Page-aware extraction for reference tools. Heading-based room detection with regex fallbacks still available via `parse` command.
 - **API resilience**: BaseAgent retries transient errors with exponential backoff. History committed only after successful API calls.
 - **Prompt injection guards**: Module summary wrapped in `<module-summary>` tags with explicit instruction to ignore embedded prompts
+- **Live web UI**: `dndplaya ui` launches an aiohttp server (HTTP+WebSocket). Session runs in a worker thread, emitting events via `UIEmitter` (thread-safe asyncio.Queue). Browser shows the table background image with CSS thought bubbles (bouncing dots) during API calls, central speech bubble with typewriter animation for narration/player dialog, toast notifications for combat/skill results, and "press space to continue" flow. Character positions mapped to image art by class (Fighter=top-left, Cleric=top-right, Wizard=bottom-left, Rogue=bottom-right). The `ui` parameter on `Session.__init__` is optional — `None` preserves the original headless console behavior.
 
 ## Testing
 
@@ -123,10 +126,10 @@ Tests cover: dice determinism + expression parsing, character/monster creation, 
 3. ~~**Random tiebreaker** — same-urgency responses always pick first in list, should randomize~~ **DONE**
 4. ~~**Log group input calls** — add explicit "request_group_input called" markers in transcript~~ **DONE**
 5. **`consult_map` tool** — Haiku struggles with map images; a text-based map description tool could help
-6. **HTML session viewer** — interactive playback with collapsible losing replies, prompt inspector, tool usage (see memory/project_html_viewer.md)
+6. ~~**HTML session viewer** — interactive playback~~ **DONE**: live web UI via `dndplaya ui` with thought/speech bubbles
 7. **Validate caching live** — run a session and check `token_usage.json` for cache hit rate. If cache reads are 0, investigate breakpoint placement.
 
 ## Dependencies
 
-Runtime: `anthropic`, `pymupdf4llm`, `pydantic`, `python-dotenv`, `click`, `rich`
+Runtime: `anthropic`, `pymupdf4llm`, `pydantic`, `python-dotenv`, `click`, `rich`, `aiohttp`
 Dev: `pytest`, `pytest-asyncio`, `ruff`

@@ -29,6 +29,11 @@ DIFFICULTY_DC = {
 }
 
 
+def _char_key(name: str) -> str:
+    """Normalise a character name to a UI element key."""
+    return name.lower().replace(" ", "_")
+
+
 class Session:
     """Main game session: DM drives the adventure via tool use."""
 
@@ -43,6 +48,8 @@ class Session:
         summary: str = "",
         max_turns: int = DEFAULT_MAX_TURNS,
         log_path: Path | None = None,
+        ui=None,
+        enable_thinking: bool = False,
     ):
         self.settings = settings
         self.dice = DiceRoller(seed=seed or settings.seed)
@@ -89,12 +96,14 @@ class Session:
                 settings=settings,
                 character=character,
                 archetype=archetype,
+                enable_thinking=enable_thinking,
             )
             self.players.append(player)
             self._player_map[character.name.lower()] = player
 
         self.max_turns = max_turns
         self.transcript = SessionTranscript(log_path=log_path)
+        self._log_dir = log_path.parent if log_path else None
         self.total_turns = 0
         self._terminated = False
 
@@ -103,6 +112,10 @@ class Session:
         self._narration_count = 0
         self._cost_budget = 3.00  # USD — abort if exceeded
         self._cache_check_turn = 10  # check cache health after this many turns
+
+        # Optional UI emitter (None = headless / console mode)
+        self.ui = ui
+        self._pending_ui_wait = False  # deferred wait_for_continue
 
         # Write module summary + party info to transcript header
         if summary:
@@ -116,6 +129,31 @@ class Session:
     def _is_party_dead(self) -> bool:
         """Check if all party members are dead (TPK)."""
         return not self.state.get_alive_characters()
+
+    def _dump_agent_logs(self) -> None:
+        """Append all agent conversation histories to disk (live debugging).
+
+        Each call appends a timestamped snapshot so the full history of
+        every prompt/response is preserved, even though players replace
+        their history via set_cached_context each turn.
+        """
+        if not self._log_dir:
+            return
+        logs_dir = self._log_dir / "agent_logs"
+        logs_dir.mkdir(exist_ok=True)
+        header = f"\n{'='*60}\n[SNAPSHOT turn={self.total_turns}]\n{'='*60}\n"
+        for agent in [self.dm] + self.players:
+            safe = agent.name.lower().replace(" ", "_")
+            with open(logs_dir / f"{safe}.txt", "a", encoding="utf-8") as f:
+                f.write(header)
+                f.write(agent.dump_history())
+                f.write("\n")
+
+    def _flush_ui_wait(self) -> None:
+        """If there's a pending speech the user hasn't continued past, wait now."""
+        if self.ui and self._pending_ui_wait:
+            self.ui.wait_for_continue()
+            self._pending_ui_wait = False
 
     # --- Live ticker output ---
 
@@ -137,17 +175,22 @@ class Session:
         try:
             # Build opening prompt
             party_desc = "\n".join(
-                f"- {c.name} ({c.char_class} level {c.level}): "
+                f"- {c.name} ({c.char_class} level {c.level}, {c.pronouns}): "
                 f"{c.max_hp} HP, AC {c.ac}"
                 for c in self.party
             )
             opening = load_prompt("session_start", party_description=party_desc)
 
             # First DM turn
+            if self.ui:
+                self.ui.thinking_start("dm")
             compact_history(self.dm)
             response = self.dm.send_with_tools(opening)
+            if self.ui:
+                self.ui.thinking_stop("dm")
             self.total_turns += 1
             self._tick("DM")
+            self._dump_agent_logs()
 
             # Main conversation loop
             while not self._terminated and self.total_turns < self.max_turns:
@@ -176,22 +219,34 @@ class Session:
                     if self._terminated or self._is_party_dead():
                         break
 
+                    if self.ui:
+                        self.ui.thinking_start("dm")
                     compact_history(self.dm)
                     response = self.dm.submit_tool_results(tool_results)
+                    if self.ui:
+                        self.ui.thinking_stop("dm")
                     self.total_turns += 1
                     self._tick("DM")
+                    self._dump_agent_logs()
                 else:
                     self._consecutive_no_tool_turns += 1
                     # DM produced text without tools — internal thinking, nudge to use tools
                     if response.text:
                         self.transcript.add_system_event(f"DM internal: {response.text}")
 
+                    if self.ui:
+                        self.ui.thinking_start("dm")
                     compact_history(self.dm)
                     response = self.dm.send_with_tools(
                         load_prompt("session_continue")
                     )
+                    if self.ui:
+                        self.ui.thinking_stop("dm")
                     self.total_turns += 1
                     self._tick("DM")
+                    self._dump_agent_logs()
+
+            self._flush_ui_wait()  # flush any pending speech at end of loop
 
             if self.total_turns >= self.max_turns:
                 warning = (
@@ -311,6 +366,11 @@ class Session:
         if text:
             self.transcript.add_dm_narration(text)
             self._narration_count += 1
+            if self.ui:
+                # Flush any previous pending speech first
+                self._flush_ui_wait()
+                self.ui.speech("dm", "Dungeon Master", text)
+                self._pending_ui_wait = True  # deferred — wait later
         return "Narrated."
 
     def _handle_dm_review_note(self, args: dict) -> str:
@@ -361,6 +421,8 @@ class Session:
         self.transcript.add_system_event(f"Skill check: {text}")
         symbol = "+" if success else "-"
         self._event(f"{symbol}{player_name} {skill} DC{dc} ({total})")
+        if self.ui:
+            self.ui.game_event(text)
         return text
 
     def _handle_attack(self, args: dict) -> str:
@@ -409,6 +471,8 @@ class Session:
             self.transcript.add_system_event(text)
             self._event(f"{attacker_name}->>{target_name} miss")
 
+        if self.ui:
+            self.ui.game_event(text)
         return text
 
     def _handle_change_hp(self, args: dict) -> str:
@@ -444,6 +508,8 @@ class Session:
 
         self.transcript.add_system_event(status)
         self._event(status)
+        if self.ui:
+            self.ui.game_event(status)
         return status
 
     def _handle_roll_initiative(self, args: dict) -> str:
@@ -497,6 +563,8 @@ class Session:
         self.transcript.add_system_event(text)
         names = [name for name, _, side in self._initiative_order]
         self._event(f"Initiative: {' > '.join(names)}")
+        if self.ui:
+            self.ui.game_event(f"Initiative: {' > '.join(names)}")
         return text
 
     def _handle_next_combat_turn(self, args: dict) -> str:
@@ -535,6 +603,75 @@ class Session:
 
     # --- Player interaction ---
 
+    def _parallel_player_calls(
+        self,
+        tasks: list[tuple[PlayerAgent, str, str]],
+    ) -> list[tuple[PlayerAgent, str, int, list[str]]]:
+        """Fire all player API calls + tool resolution in parallel.
+
+        Each task is (player, chat_context, prompt_suffix).
+        Thinking bubbles appear/disappear per-player based on actual LLM
+        latency — covering both the initial send AND the drain loop
+        (submit_tool_results) which is the hidden cost.
+
+        Returns resolved (player, text, urgency, mechanical) tuples.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        # Dice and game-state mutations must be serialized
+        resolve_lock = threading.Lock()
+
+        def _call(player: PlayerAgent, chat: str, suffix: str):
+            pkey = _char_key(player.character.name)
+            if self.ui:
+                self.ui.thinking_start(pkey)
+
+            player.set_cached_context(chat)
+
+            # Remind the player what they already said (prevents repetition)
+            name = player.character.name
+            prior = [
+                line.split(": ", 1)[1]
+                for line in chat.split("\n")
+                if line.startswith(f"{name}: ")
+            ]
+            prompt = f"What does {name} do?\n\n{suffix}"
+            if prior:
+                prompt += (
+                    f"\n\nYou already said: "
+                    + " / ".join(f'"{p[:80]}"' for p in prior)
+                )
+
+            response = player.send_with_tools(prompt)
+
+            # Resolve tools (includes drain loop with submit_tool_results).
+            # The lock protects dice rolls and game-state writes inside
+            # attack/heal resolution; the API call itself releases the GIL.
+            with resolve_lock:
+                text, urgency, mechanical = self._resolve_player_tools(
+                    player, response
+                )
+
+            if self.ui:
+                self.ui.thinking_stop(pkey)
+            self._tick(player.character.name)
+            return player, text, urgency, mechanical
+
+        if not tasks:
+            return []
+
+        results: list[tuple[PlayerAgent, str, int, list[str]]] = []
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = [
+                pool.submit(_call, p, chat, suffix)
+                for p, chat, suffix in tasks
+            ]
+            for future in as_completed(futures):
+                results.append(future.result())
+        self._dump_agent_logs()
+        return results
+
     def _handle_request_group_input(self, args: dict) -> str:
         """Conversational group input with urgency-based turn selection.
 
@@ -544,8 +681,12 @@ class Session:
         responses never enter the chat. When a response wins, it's appended
         to the chat so subsequent calls see it in the cached prefix.
         """
+        # Flush any pending DM speech and stop DM thinking before players think
+        self._flush_ui_wait()
+        if self.ui:
+            self.ui.thinking_stop("dm")
         self.transcript.add_system_event("--- REQUEST GROUP INPUT ---")
-        URGENCY_THRESHOLDS = [1, 2, 3, 3, 4, 4, 5]
+        MAX_FOLLOWUP_ROUNDS = 10  # safety cap
 
         # Build the chat — everything that happened in the session so far.
         # This is the cached prefix, identical for all players.
@@ -565,18 +706,14 @@ class Session:
         if not alive_players:
             return "All players are unconscious."
 
-        # --- Round 1: All players respond ---
+        # --- Round 1: All players respond (parallel API calls) ---
         # Each player gets: [cached chat] + "What does [name] do?"
         prompt_suffix = load_prompt("player_followup")
         round1_responses: list[tuple[PlayerAgent, str, int, list[str]]] = []
-        for player, _ in alive_players:
-            player.set_cached_context(chat)
-            response = player.send_with_tools(
-                f"What does {player.character.name} do?\n\n{prompt_suffix}"
-            )
-            text, urgency, mechanical = self._resolve_player_tools(player, response)
-            self._tick(player.character.name)
-            round1_responses.append((player, text, urgency, mechanical))
+
+        round1_responses = self._parallel_player_calls(
+            [(p, chat, prompt_suffix) for p, _ in alive_players]
+        )
 
         # Sort by urgency — winner starts the thread (random tiebreaker)
         random.shuffle(round1_responses)
@@ -600,6 +737,17 @@ class Session:
         for mech in winner[3]:
             chat += f"\n[{mech}]"
 
+        # UI: show winner's speech
+        if self.ui and winner[1] and winner[1] != "pass":
+            display = winner[1]
+            if winner[3]:
+                display += "\n" + "\n".join(f"[{m}]" for m in winner[3])
+            self.ui.speech(
+                _char_key(winner[0].character.name),
+                winner[0].character.name,
+                display,
+            )
+
         # Log all losing round 1 responses
         for player, text, urgency, mechanical in round1_responses[1:]:
             self.transcript.add_discarded_response(
@@ -611,21 +759,50 @@ class Session:
         last_speaker = winner[0].character.name
 
         # --- Follow-up rounds: everyone except last speaker ---
-        for _round, min_urgency in enumerate(URGENCY_THRESHOLDS):
+        # Prefetch: start next round's API calls while user reads speech.
+        # Thinking bubbles appear immediately alongside the speech bubble.
+        from concurrent.futures import ThreadPoolExecutor
+        prefetch_future = None
+        prefetch_pool = ThreadPoolExecutor(max_workers=1)
+
+        def _start_prefetch():
+            remaining = [
+                (p, chat, prompt_suffix)
+                for p, _ in alive_players
+                if p.character.name != last_speaker
+            ]
+            if remaining:
+                return prefetch_pool.submit(
+                    self._parallel_player_calls, remaining
+                )
+            return None
+
+        # Wait for typewriter to finish, then kick off follow-up while user reads
+        if self.ui:
+            self.ui.wait_for_typewriter()
+            prefetch_future = _start_prefetch()
+
+        for _round in range(MAX_FOLLOWUP_ROUNDS):
+            min_urgency = min(_round + 1, 5)  # 1, 2, 3, 4, 5, 5, 5, ...
+            # Wait for user to continue past the previous speech
+            if self.ui:
+                self.ui.wait_for_continue()
+
+            # Get results — from prefetch if available, otherwise call directly
+            if prefetch_future is not None:
+                all_results = prefetch_future.result()
+                prefetch_future = None
+            else:
+                remaining = [
+                    (p, chat, prompt_suffix)
+                    for p, _ in alive_players
+                    if p.character.name != last_speaker
+                ]
+                all_results = self._parallel_player_calls(remaining)
+
             follow_responses: list[tuple[PlayerAgent, str, int, list[str]]] = []
             passed: list[str] = []
-            for player, _ in alive_players:
-                if player.character.name == last_speaker:
-                    continue
-                # Fresh call: [cached chat (now includes winners)] + short prompt
-                player.set_cached_context(chat)
-                response = player.send_with_tools(
-                    f"What does {player.character.name} do?\n\n{prompt_suffix}"
-                )
-                text, urgency, mechanical = self._resolve_player_tools(
-                    player, response
-                )
-                self._tick(player.character.name)
+            for player, text, urgency, mechanical in all_results:
                 if text == "pass" or not text.strip():
                     passed.append(player.character.name)
                     self.transcript.add_discarded_response(
@@ -668,6 +845,17 @@ class Session:
             for mech in fw[3]:
                 chat += f"\n[{mech}]"
 
+            # UI: show follow-up winner's speech
+            if self.ui and fw[1] and fw[1] != "pass":
+                display = fw[1]
+                if fw[3]:
+                    display += "\n" + "\n".join(f"[{m}]" for m in fw[3])
+                self.ui.speech(
+                    _char_key(fw[0].character.name),
+                    fw[0].character.name,
+                    display,
+                )
+
             # Log losing follow-up responses
             for player, text, urgency, mechanical in follow_responses[1:]:
                 self.transcript.add_discarded_response(
@@ -677,10 +865,17 @@ class Session:
                 )
 
             last_speaker = fw[0].character.name
+
+            # Wait for typewriter to finish, then prefetch next follow-up
+            if self.ui:
+                self.ui.wait_for_typewriter()
+                prefetch_future = _start_prefetch()
         else:
             self.transcript.add_system_event(
-                f"Group input hit {len(URGENCY_THRESHOLDS)} round cap."
+                f"Group input hit {MAX_FOLLOWUP_ROUNDS} round cap."
             )
+
+        prefetch_pool.shutdown(wait=False)
 
         # --- Bundle the thread for the DM ---
         result_lines = ["Player responses:"]
@@ -801,6 +996,8 @@ class Session:
             self._event(f"{char.name}->>{target_name} {damage}dmg")
         else:
             self._event(f"{char.name}->>{target_name} miss")
+        if self.ui:
+            self.ui.game_event(result)
         return result
 
     def _resolve_player_heal(self, player: PlayerAgent, args: dict) -> str:
@@ -842,6 +1039,8 @@ class Session:
         )
         self.transcript.add_system_event(result)
         self._event(f"{char.name} heals {target_name} +{actual}HP")
+        if self.ui:
+            self.ui.game_event(result)
         return result
 
     # --- Unchanged handlers ---
@@ -951,8 +1150,11 @@ class Session:
     def _handle_end_session(self, args: dict) -> str:
         reason = args.get("reason", "Adventure complete")
         self._terminated = True
+        self._flush_ui_wait()  # flush any pending speech
         self.transcript.add_system_event(f"Session ended: {reason}")
         self._event(f"Session ended: {reason}")
+        if self.ui:
+            self.ui.session_end(reason)
         return f"Session ended: {reason}"
 
     def _build_result(self) -> SessionResult:

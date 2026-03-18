@@ -58,6 +58,8 @@ class TestSessionToolDispatch:
         session._narration_count = 0
         session._cost_budget = 3.00
         session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
 
         return session
 
@@ -313,6 +315,8 @@ class TestProcessToolCalls:
         session._narration_count = 0
         session._cost_budget = 3.00
         session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
 
         return session
 
@@ -388,6 +392,8 @@ class TestModuleReferenceTools:
         session._narration_count = 0
         session._cost_budget = 3.00
         session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
 
         return session
 
@@ -550,6 +556,8 @@ class TestMonsterRegistration:
         session._narration_count = 0
         session._cost_budget = 3.00
         session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
 
         return session
 

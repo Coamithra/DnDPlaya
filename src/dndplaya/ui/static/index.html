@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DnDPlaya</title>
+<style>
+/* ── Reset & base ───────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  width:100vw;height:100vh;overflow:hidden;
+  font-family:'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif;
+  background:#1a1a1a;
+}
+
+/* ── Table background ───────────────────────────────────────── */
+#table{
+  width:100%;height:100%;position:relative;
+  background:url('/bg.png') center/cover no-repeat;
+}
+
+/* ── Character name labels ──────────────────────────────────── */
+.name-label{
+  position:absolute;transform:translate(-50%,0);
+  background:rgba(0,0,0,.72);color:#d4a574;
+  padding:4px 14px;border-radius:12px;
+  font-size:14px;font-weight:bold;white-space:nowrap;
+  pointer-events:none;text-shadow:1px 1px 2px rgba(0,0,0,.5);
+  z-index:5;
+}
+
+/* ── Thought bubble ─────────────────────────────────────────── */
+.thought-bubble{
+  position:absolute;transform:translate(-50%,-100%);
+  display:none;z-index:10;margin-top:-18px;
+}
+.thought-bubble.active{display:block;animation:tb-float 2s ease-in-out infinite}
+
+.thought-cloud{
+  background:#fff;border-radius:50%;
+  padding:10px 16px;box-shadow:0 2px 8px rgba(0,0,0,.3);
+  display:flex;gap:6px;align-items:center;
+}
+.thought-tail{position:absolute;bottom:-15px;left:50%;transform:translateX(-50%)}
+.thought-tail::before{
+  content:'';position:absolute;width:10px;height:10px;
+  background:#fff;border-radius:50%;bottom:0;left:-3px;
+  box-shadow:0 1px 4px rgba(0,0,0,.2);
+}
+.thought-tail::after{
+  content:'';position:absolute;width:6px;height:6px;
+  background:#fff;border-radius:50%;bottom:-10px;left:1px;
+  box-shadow:0 1px 3px rgba(0,0,0,.2);
+}
+
+.dot{
+  width:8px;height:8px;background:#666;border-radius:50%;
+  animation:dot-bounce 1.4s infinite ease-in-out;
+}
+.dot:nth-child(2){animation-delay:.16s}
+.dot:nth-child(3){animation-delay:.32s}
+
+@keyframes dot-bounce{
+  0%,80%,100%{transform:scale(.55);opacity:.45}
+  40%{transform:scale(1);opacity:1}
+}
+@keyframes tb-float{
+  0%,100%{margin-top:-18px}
+  50%{margin-top:-28px}
+}
+
+/* ── Speech wrapper (holds bubble + arrow) ──────────────────── */
+#speech-wrapper{
+  position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);
+  width:55%;min-width:320px;
+  z-index:20;
+  display:none;
+}
+#speech-wrapper.active{display:block;animation:pop-in .25s ease-out}
+
+@keyframes pop-in{
+  0%{transform:translate(-50%,-50%) scale(.85);opacity:0}
+  100%{transform:translate(-50%,-50%) scale(1);opacity:1}
+}
+
+/* Arrow — CSS triangle via pseudo-elements on wrapper */
+#speech-wrapper::before{
+  content:'';position:absolute;
+  width:0;height:0;
+  left:var(--arrow-left,50%);transform:translateX(-50%);
+  border-left:16px solid transparent;
+  border-right:16px solid transparent;
+  display:none;z-index:2;
+}
+#speech-wrapper::after{
+  content:'';position:absolute;
+  width:0;height:0;
+  left:var(--arrow-left,50%);transform:translateX(-50%);
+  border-left:12px solid transparent;
+  border-right:12px solid transparent;
+  display:none;z-index:3;
+}
+
+/* Arrow UP (dm + top seats) */
+#speech-wrapper.arrow-up::before{
+  display:block;top:-20px;
+  border-bottom:20px solid #4a3728;
+}
+#speech-wrapper.arrow-up::after{
+  display:block;top:-16px;
+  border-bottom:16px solid rgba(253,245,230,.95);
+}
+
+/* Arrow DOWN (bottom seats) */
+#speech-wrapper.arrow-down::before{
+  display:block;bottom:-20px;
+  border-top:20px solid #4a3728;
+}
+#speech-wrapper.arrow-down::after{
+  display:block;bottom:-16px;
+  border-top:16px solid rgba(253,245,230,.95);
+}
+
+/* ── Speech bubble (inside wrapper) ─────────────────────────── */
+#speech-bubble{
+  background:rgba(253,245,230,.95);
+  border:3px solid #4a3728;border-radius:20px;
+  padding:24px 32px 18px;
+  max-height:50vh;
+  overflow-y:auto;
+  box-shadow:0 8px 24px rgba(0,0,0,.45);
+}
+
+.speaker-name{
+  font-weight:bold;color:#4a3728;font-size:17px;
+  margin-bottom:10px;padding-bottom:8px;
+  border-bottom:2px solid #d4a574;
+}
+.speech-text{
+  color:#2c1810;font-size:16px;line-height:1.65;white-space:pre-wrap;
+}
+
+/* Blinking cursor */
+.cursor{
+  display:inline-block;width:2px;height:1em;
+  background:#4a3728;vertical-align:text-bottom;margin-left:2px;
+  animation:blink .7s step-end infinite;
+}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+
+/* "Press Space" hint */
+.continue-hint{
+  text-align:center;color:#8a7560;font-size:13px;
+  margin-top:14px;padding-top:10px;
+  border-top:1px solid #d4a574;
+  display:none;
+}
+.continue-hint.active{display:block;animation:hint-pulse 2s infinite}
+@keyframes hint-pulse{0%,100%{opacity:.45}50%{opacity:1}}
+
+/* ── Toast notifications ────────────────────────────────────── */
+#toasts{
+  position:absolute;bottom:16px;left:16px;z-index:30;
+  display:flex;flex-direction:column-reverse;gap:6px;
+  max-width:420px;pointer-events:none;
+}
+.toast{
+  background:rgba(0,0,0,.88);color:#e0d5c0;
+  padding:10px 16px;border-radius:8px;font-size:14px;
+  border-left:3px solid #d4a574;
+  animation:toast-in .3s ease-out;
+  transition:opacity .4s ease;
+}
+.toast.fading{opacity:0}
+@keyframes toast-in{
+  0%{transform:translateX(-30px);opacity:0}
+  100%{transform:none;opacity:1}
+}
+
+/* ── Session overlay (start / end) ──────────────────────────── */
+#overlay{
+  position:absolute;inset:0;
+  background:rgba(0,0,0,.72);
+  display:flex;align-items:center;justify-content:center;
+  z-index:50;
+}
+.overlay-box{
+  background:#2c1810;border:2px solid #d4a574;border-radius:15px;
+  padding:36px 48px;color:#e0d5c0;text-align:center;max-width:500px;
+}
+.overlay-title{font-size:26px;color:#d4a574;margin-bottom:14px}
+.overlay-text{font-size:16px;line-height:1.5}
+
+/* ── Connection status ──────────────────────────────────────── */
+#status{
+  position:absolute;top:10px;right:10px;
+  background:rgba(0,0,0,.7);color:#888;
+  padding:4px 12px;border-radius:10px;
+  font-size:12px;font-family:system-ui,sans-serif;z-index:40;
+}
+</style>
+</head>
+<body>
+<div id="table">
+  <div id="status">Connecting...</div>
+
+  <div id="speech-wrapper">
+    <div id="speech-bubble">
+      <div class="speaker-name" id="speaker-name"></div>
+      <div class="speech-text" id="speech-text"></div>
+      <div class="continue-hint" id="continue-hint">Press Space, Enter, or &rarr; to continue</div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
+  <div id="overlay">
+    <div class="overlay-box">
+      <div class="overlay-title">DnDPlaya</div>
+      <div class="overlay-text" id="overlay-text">Waiting for session...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   DnDPlaya UI — WebSocket client
+   ════════════════════════════════════════════════════════════════ */
+
+const SEATS = {
+  dm:{ x:45, y:8,  labelY:17 },
+  0: { x:17, y:14, labelY:29 },
+  1: { x:83, y:11, labelY:25 },
+  2: { x:14, y:69, labelY:86 },
+  3: { x:86, y:67, labelY:84 },
+};
+
+// Arrow direction + CSS custom-property left% per seat
+const ARROW_CONFIG = {
+  dm: { dir:'up',   left:'50%' },
+  0:  { dir:'up',   left:'25%' },
+  1:  { dir:'up',   left:'75%' },
+  2:  { dir:'down', left:'25%' },
+  3:  { dir:'down', left:'75%' },
+};
+
+let ws = null;
+const playerKeys = [];
+const charSeats = {};
+let currentSpeechText = '';
+let typewriterTimer = null;
+let typewriterPos = 0;
+let waitingForContinue = false;
+
+/* ── WebSocket ─────────────────────────────────────────────── */
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('status').textContent = 'Connected';
+    document.getElementById('status').style.color = '#5a5';
+  };
+  ws.onclose = () => {
+    document.getElementById('status').textContent = 'Disconnected';
+    document.getElementById('status').style.color = '#a55';
+    setTimeout(connect, 3000);
+  };
+  ws.onmessage = e => handleEvent(JSON.parse(e.data));
+}
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case 'session_start':  setupSession(ev);                      break;
+    case 'thinking_start': showThinking(ev.who);                  break;
+    case 'thinking_stop':  hideThinking(ev.who);                  break;
+    case 'speech':         showSpeech(ev.who, ev.name, ev.text);  break;
+    case 'game_event':     showToast(ev.text);                    break;
+    case 'waiting':        enableContinue();                      break;
+    case 'session_end':    showSessionEnd(ev.reason);             break;
+  }
+}
+
+/* ── Session setup ─────────────────────────────────────────── */
+
+function setupSession(ev) {
+  document.getElementById('overlay').style.display = 'none';
+  createCharacterUI('dm', ev.dm || 'Dungeon Master', SEATS.dm);
+  charSeats['dm'] = 'dm';
+
+  for (const p of ev.players) {
+    const key = p.name.toLowerCase().replace(/\s+/g, '_');
+    const seat = SEATS[p.seat];
+    if (!seat) continue;
+    createCharacterUI(key, p.name, seat);
+    playerKeys.push(key);
+    charSeats[key] = p.seat;
+  }
+}
+
+function createCharacterUI(key, name, pos) {
+  const table = document.getElementById('table');
+
+  const label = document.createElement('div');
+  label.className = 'name-label';
+  label.id = 'label-' + key;
+  label.textContent = name;
+  label.style.left = pos.x + '%';
+  label.style.top  = pos.labelY + '%';
+  table.appendChild(label);
+
+  const tb = document.createElement('div');
+  tb.className = 'thought-bubble';
+  tb.id = 'thought-' + key;
+  tb.innerHTML =
+    '<div class="thought-cloud">' +
+      '<div class="dot"></div><div class="dot"></div><div class="dot"></div>' +
+    '</div>' +
+    '<div class="thought-tail"></div>';
+  tb.style.left = pos.x + '%';
+  tb.style.top  = pos.y + '%';
+  table.appendChild(tb);
+}
+
+/* ── Thinking bubbles ──────────────────────────────────────── */
+
+function showThinking(who) { setThought(who, true); }
+function hideThinking(who) { setThought(who, false); }
+
+function setThought(key, on) {
+  const el = document.getElementById('thought-' + key);
+  if (el) el.classList.toggle('active', on);
+}
+
+/* ── Speech bubble ─────────────────────────────────────────── */
+
+function showSpeech(who, name, text) {
+  const wrapper = document.getElementById('speech-wrapper');
+  const bubble  = document.getElementById('speech-bubble');
+  const nameEl  = document.getElementById('speaker-name');
+  const textEl  = document.getElementById('speech-text');
+  const hintEl  = document.getElementById('continue-hint');
+
+  if (typewriterTimer) { clearInterval(typewriterTimer); typewriterTimer = null; }
+  waitingForContinue = false;
+  nameEl.textContent = name;
+  textEl.innerHTML = '';
+  hintEl.classList.remove('active');
+  currentSpeechText = text;
+  typewriterPos = 0;
+  typewriterDoneSent = false;
+
+  // Set arrow direction + position via CSS classes & custom property
+  const seat = charSeats[who];
+  const cfg = ARROW_CONFIG[seat];
+  wrapper.className = 'active';
+  if (cfg) {
+    wrapper.classList.add('arrow-' + cfg.dir);
+    wrapper.style.setProperty('--arrow-left', cfg.left);
+  }
+
+  // Render markdown to HTML, then typewrite through the text nodes
+  const staging = document.createElement('div');
+  staging.innerHTML = renderMarkdown(text);
+
+  // Collect all text nodes with their full text, then empty them
+  typewriterNodes = [];
+  typewriterTotalChars = 0;
+  (function walk(node) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE && child.textContent.length > 0) {
+        typewriterNodes.push({ node: child, full: child.textContent });
+        typewriterTotalChars += child.textContent.length;
+        child.textContent = '';
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        walk(child);
+      }
+    }
+  })(staging);
+
+  // Move rendered (but emptied) nodes into the speech element
+  while (staging.firstChild) textEl.appendChild(staging.firstChild);
+
+  // Cursor at the end
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  textEl.appendChild(cursor);
+
+  // Typewriter: reveal one character per tick across text nodes in order
+  const speed = 10;
+  typewriterTimer = setInterval(() => {
+    if (typewriterPos < typewriterTotalChars) {
+      revealOneChar();
+      typewriterPos++;
+      bubble.scrollTop = bubble.scrollHeight;
+    } else {
+      clearInterval(typewriterTimer);
+      typewriterTimer = null;
+      cursor.remove();
+      sendTypewriterDone();
+      if (waitingForContinue) hintEl.classList.add('active');
+    }
+  }, speed);
+}
+
+// Globals for the typewriter node-walker
+let typewriterNodes = [];    // [{node, full}, ...]
+let typewriterTotalChars = 0;
+
+function revealOneChar() {
+  // Find which text node the current typewriterPos falls in
+  let pos = typewriterPos;
+  for (const entry of typewriterNodes) {
+    if (pos < entry.full.length) {
+      entry.node.textContent = entry.full.slice(0, pos + 1);
+      return;
+    }
+    pos -= entry.full.length;
+  }
+}
+
+function completeTypewriter() {
+  if (!typewriterTimer) return;
+  clearInterval(typewriterTimer);
+  typewriterTimer = null;
+
+  // Reveal all remaining text
+  for (const entry of typewriterNodes) {
+    entry.node.textContent = entry.full;
+  }
+
+  const textEl = document.getElementById('speech-text');
+  const cursor = textEl.querySelector('.cursor');
+  if (cursor) cursor.remove();
+
+  document.getElementById('speech-bubble').scrollTop = 999999;
+  sendTypewriterDone();
+
+  if (waitingForContinue) {
+    document.getElementById('continue-hint').classList.add('active');
+  }
+}
+
+function hideSpeech() {
+  completeTypewriter();
+  document.getElementById('speech-wrapper').className = '';  // removes active + arrow classes
+  document.getElementById('continue-hint').classList.remove('active');
+}
+
+/* ── Continue control ──────────────────────────────────────── */
+
+function enableContinue() {
+  waitingForContinue = true;
+  if (!typewriterTimer) {
+    document.getElementById('continue-hint').classList.add('active');
+  }
+}
+
+let typewriterDoneSent = false;
+
+function sendTypewriterDone() {
+  if (typewriterDoneSent) return;
+  typewriterDoneSent = true;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'typewriter_done' }));
+  }
+}
+
+function sendContinue() {
+  if (!waitingForContinue) return;
+  waitingForContinue = false;
+  hideSpeech();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'continue' }));
+  }
+}
+
+/* ── Toast notifications ───────────────────────────────────── */
+
+function showToast(text) {
+  const container = document.getElementById('toasts');
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = text;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('fading');
+    setTimeout(() => toast.remove(), 500);
+  }, 5000);
+  while (container.children.length > 8) container.firstChild.remove();
+}
+
+/* ── Session end ───────────────────────────────────────────── */
+
+function showSessionEnd(reason) {
+  hideSpeech();
+  const overlay = document.getElementById('overlay');
+  overlay.querySelector('.overlay-title').textContent = 'Session Complete';
+  document.getElementById('overlay-text').textContent = reason;
+  overlay.style.display = 'flex';
+}
+
+/* ── Keyboard / click ──────────────────────────────────────── */
+
+document.addEventListener('keydown', e => {
+  if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (typewriterTimer && !waitingForContinue) {
+      completeTypewriter();
+    } else if (typewriterTimer && waitingForContinue) {
+      completeTypewriter();
+      sendContinue();
+    } else {
+      sendContinue();
+    }
+  }
+});
+
+document.addEventListener('click', () => {
+  if (typewriterTimer && !waitingForContinue) {
+    completeTypewriter();
+  } else if (typewriterTimer && waitingForContinue) {
+    completeTypewriter();
+    sendContinue();
+  } else {
+    sendContinue();
+  }
+});
+
+/* ── Simple markdown → HTML ─────────────────────────────────── */
+
+function renderMarkdown(text) {
+  // Escape HTML entities first
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  // Bold: **text** or __text__
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  // Italic: *text* or _text_ (but not inside bold markers)
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, '<em>$1</em>');
+  return html;
+}
+
+connect();
+</script>
+</body>
+</html>

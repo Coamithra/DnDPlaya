@@ -156,6 +156,14 @@ class SessionTranscript:
                     continue
                 if c.startswith("DM internal:"):
                     continue
+                if c.startswith("DM searches module:"):
+                    continue
+                if c.startswith("DM reads page"):
+                    continue
+                if c.startswith("CACHE CONTEXT"):
+                    continue
+                if "review note:" in c:
+                    continue
                 if c.startswith("Round 1 urgency:") or c.startswith("Follow-up round"):
                     continue
                 if c.startswith("All players passed"):

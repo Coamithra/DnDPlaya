@@ -35,6 +35,7 @@ class PlayerAgent(BaseAgent):
         settings: Settings,
         character: Character,
         archetype: str,
+        enable_thinking: bool = False,
     ):
         if archetype not in ARCHETYPES:
             raise ValueError(f"Unknown archetype: {archetype}. Must be one of {list(ARCHETYPES)}")
@@ -60,6 +61,7 @@ class PlayerAgent(BaseAgent):
         system = load_prompt(
             "player_system",
             char_name=character.name,
+            char_pronouns=character.pronouns,
             char_class=character.char_class,
             char_level=character.level,
             char_hp=character.max_hp,
@@ -79,6 +81,8 @@ class PlayerAgent(BaseAgent):
             system_prompt=system,
             settings=player_settings,
             tools=PLAYER_TOOLS,
+            enable_thinking=enable_thinking,
+            thinking_budget=1024,
         )
 
     def add_engagement_note(self, note: str) -> None:
