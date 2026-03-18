@@ -855,7 +855,7 @@ class TestRoleConfusionDetection:
         return session
 
     def test_dm_prefix_stripped_from_say(self):
-        """Text after 'DM:' in a say() call should be stripped."""
+        """Text after 'DM:' in a say() call should be stripped via validation."""
         session = self._make_session()
         player = MagicMock()
         player.character = session.party[0]
@@ -869,7 +869,9 @@ class TestRoleConfusionDetection:
             tool_calls=[_tool_call("say", {"text": text_with_dm, "urgency": 3})],
             stop_reason="tool_use",
         )
-        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        result = session._validate_player_response(player, response)
+        assert result.status == "fixed"
+        text, urgency, mechanical = session._resolve_player_tools(player, result.response)
         assert text == "I approach the tree cautiously."
         assert "DM:" not in text
 
@@ -884,7 +886,9 @@ class TestRoleConfusionDetection:
             tool_calls=[_tool_call("say", {"text": "DM: You enter a dark room.", "urgency": 3})],
             stop_reason="tool_use",
         )
-        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        result = session._validate_player_response(player, response)
+        assert result.status == "fixed"
+        text, urgency, mechanical = session._resolve_player_tools(player, result.response)
         assert text == "pass"
         assert urgency == 0
 
@@ -899,6 +903,8 @@ class TestRoleConfusionDetection:
             tool_calls=[_tool_call("say", {"text": "I search the room.", "urgency": 3})],
             stop_reason="tool_use",
         )
+        result = session._validate_player_response(player, response)
+        assert result.status == "ok"
         text, urgency, mechanical = session._resolve_player_tools(player, response)
         assert text == "I search the room."
 

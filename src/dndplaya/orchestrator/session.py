@@ -35,6 +35,15 @@ def _char_key(name: str) -> str:
     return name.lower().replace(" ", "_")
 
 
+@dataclass
+class ValidationResult:
+    """Outcome of validating a player response."""
+
+    status: str  # "ok", "fixed", "needsretry"
+    response: AgentResponse | None = None  # set when status == "fixed"
+    hint: str = ""  # correction hint appended to prompt on retry
+
+
 def _has_excessive_non_ascii(text: str, threshold: float = 0.30) -> bool:
     """Return True if more than *threshold* fraction of characters are non-ASCII.
 
@@ -821,33 +830,21 @@ class Session:
                     + " / ".join(f'"{p[:80]}"' for p in prior)
                 )
 
-            # Provider guardrail: if the response is non-English,
-            # roll back history (erase the bad exchange) and resend.
-            # Players have no persistent history (set_cached_context rebuilds
-            # it each call), so rollback is safe and cheap.
-            g = self._guardrails
-            max_lang_retries = 2 if g.detect_non_ascii else 0
-            for _attempt in range(1 + max_lang_retries):
+            # Validate + retry loop: send, validate, fix or retry.
+            max_retries = 3
+            for _attempt in range(max_retries):
                 response = player.send_with_tools(prompt)
+                result = self._validate_player_response(player, response)
 
-                if not g.detect_non_ascii:
+                if result.status == "ok":
                     break
-
-                texts_to_check = []
-                if response.text:
-                    texts_to_check.append(response.text)
-                for rtc in response.tool_calls:
-                    if rtc.name == "say":
-                        texts_to_check.append(str(rtc.arguments.get("text", "")))
-                combined = " ".join(texts_to_check)
-
-                if not combined.strip() or not _has_excessive_non_ascii(combined, g.non_ascii_threshold):
-                    break  # clean response
-
-                self._event(f"WARN: {name} non-English (attempt {_attempt + 1}) — rollback + retry")
+                if result.status == "fixed":
+                    response = result.response  # use cleaned-up version
+                    break
+                # needsretry — roll back and resend with correction hint
                 player.rollback_history(snapshot)
                 player.set_cached_context(chat)
-                prompt += "\n\nIMPORTANT: Respond in English only."
+                prompt += f"\n\n{result.hint}"
 
             # Resolve tools (includes drain loop with submit_tool_results).
             # The lock protects dice rolls and game-state writes inside
@@ -1130,6 +1127,51 @@ class Session:
 
         return "\n".join(result_lines)
 
+    def _validate_player_response(
+        self, player: PlayerAgent, response: AgentResponse,
+    ) -> ValidationResult:
+        """Validate a player response. Returns ok / fixed / needsretry."""
+        g = self._guardrails
+        name = player.character.name
+
+        # --- Collect all text from the response (free text + say args) ---
+        all_text = []
+        if response.text:
+            all_text.append(response.text)
+        for tc in response.tool_calls:
+            if tc.name == "say":
+                all_text.append(str(tc.arguments.get("text", "")))
+        combined = " ".join(all_text)
+
+        # --- Non-ASCII: entire response is unsalvageable → needsretry ---
+        if g.detect_non_ascii and combined.strip():
+            if _has_excessive_non_ascii(combined, g.non_ascii_threshold):
+                self._event(f"WARN: {name} non-English — needs retry")
+                return ValidationResult(
+                    status="needsretry",
+                    hint="IMPORTANT: Respond in English only.",
+                )
+
+        # --- Role confusion: strip "DM:" content from say() args → fixed ---
+        if g.detect_role_confusion and response.tool_calls:
+            fixed_any = False
+            for tc in response.tool_calls:
+                if tc.name == "say":
+                    text = str(tc.arguments.get("text", ""))
+                    dm_match = re.search(r'\bDM:', text)
+                    if dm_match:
+                        tc.arguments["text"] = text[:dm_match.start()].strip()
+                        fixed_any = True
+            if fixed_any:
+                self._event(f"WARN: {name} role-confused — fixed")
+                self.transcript.add_system_event(
+                    f"Role confusion detected: {name} "
+                    "hallucinated DM response — stripped."
+                )
+                return ValidationResult(status="fixed", response=response)
+
+        return ValidationResult(status="ok")
+
     def _resolve_player_tools(
         self, player: PlayerAgent, response: AgentResponse
     ) -> tuple[str, int, list[str]]:
@@ -1147,7 +1189,7 @@ class Session:
                 text = self._clean_local_model_text(text)
             return text, urgency, mechanical_results
 
-        # Process tool calls
+        # Process tool calls — validation already happened upstream
         g = self._guardrails
         tool_call_count = 0
 
@@ -1158,17 +1200,6 @@ class Session:
                 if not isinstance(raw_text, str):
                     raw_text = str(raw_text)
                 say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
-
-                # Provider guardrail: Role confusion — strip hallucinated DM responses
-                if g.detect_role_confusion:
-                    dm_match = re.search(r'\bDM:', say_text)
-                    if dm_match:
-                        self._event(f"WARN: {player.character.name} role-confused (DM: in say)")
-                        self.transcript.add_system_event(
-                            f"Role confusion detected: {player.character.name} "
-                            "hallucinated DM response — stripped."
-                        )
-                        say_text = say_text[:dm_match.start()].strip()
 
                 # Empty say() treated as pass (checked BEFORE incrementing tool count)
                 if not say_text:
@@ -1237,13 +1268,6 @@ class Session:
                         if not isinstance(raw_text, str):
                             raw_text = str(raw_text)
                         candidate = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
-
-                        # Provider guardrail: Role confusion in drain loop
-                        if g.detect_role_confusion:
-                            dm_match = re.search(r'\bDM:', candidate)
-                            if dm_match:
-                                self._event(f"WARN: {player.character.name} role-confused (drain)")
-                                candidate = candidate[:dm_match.start()].strip()
 
                         # Empty say in drain loop (checked BEFORE incrementing tool count)
                         if not candidate:
