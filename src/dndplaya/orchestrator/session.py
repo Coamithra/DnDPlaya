@@ -13,6 +13,7 @@ from ..mechanics.dice import DiceRoller
 from ..agents.dm import DMAgent
 from ..agents.player import PlayerAgent, ARCHETYPES
 from ..agents.base import AgentResponse
+from ..agents.provider import ProviderGuardrails
 from ..agents.context import compact_history
 from ..prompts import load_prompt
 from .transcript import SessionTranscript
@@ -104,6 +105,9 @@ class Session:
                 music_tracks=music_tracks,
                 enable_reviews=enable_reviews,
             )
+
+        # Provider guardrails — the provider declares what constraints it needs
+        self._guardrails: ProviderGuardrails = self.dm.provider.guardrails
 
         # Create player agents
         archetype_names = list(ARCHETYPES.keys())
@@ -1117,10 +1121,8 @@ class Session:
             return text, urgency, mechanical_results
 
         # Process tool calls
-        # Ollama-only guardrails: local models need tighter constraints
-        _is_ollama = self.settings.provider == "ollama"
-        tool_call_count = 0  # per-player drain loop cap (Ollama only)
-        MAX_TOOL_CALLS_PER_PLAYER = 5
+        g = self._guardrails
+        tool_call_count = 0
 
         tool_results_for_api: list[tuple[str, str]] = []
         for tc in response.tool_calls:
@@ -1130,8 +1132,8 @@ class Session:
                     raw_text = str(raw_text)
                 say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
 
-                # Ollama-only: Role confusion — strip hallucinated DM responses
-                if _is_ollama:
+                # Provider guardrail: Role confusion — strip hallucinated DM responses
+                if g.detect_role_confusion:
                     dm_match = re.search(r'\bDM:', say_text)
                     if dm_match:
                         self._event(f"WARN: {player.character.name} role-confused (DM: in say)")
@@ -1141,8 +1143,8 @@ class Session:
                         )
                         say_text = say_text[:dm_match.start()].strip()
 
-                # Ollama-only: Language detection — strip non-English content
-                if _is_ollama and say_text and _has_excessive_non_ascii(say_text):
+                # Provider guardrail: Language detection — strip non-English content
+                if g.detect_non_ascii and say_text and _has_excessive_non_ascii(say_text, g.non_ascii_threshold):
                     self._event(f"WARN: {player.character.name} non-English content detected — treated as pass")
                     self.transcript.add_system_event(
                         f"{player.character.name} sent non-English content — stripped."
@@ -1192,12 +1194,12 @@ class Session:
         # Fix 3: hard cap on total tool calls per player per group input round.
         max_drain = 5  # safety valve
         while tool_results_for_api and max_drain > 0:
-            # Ollama-only: stop draining if we've hit the per-player cap
-            if _is_ollama and tool_call_count >= MAX_TOOL_CALLS_PER_PLAYER:
-                self._event(f"WARN: {player.character.name} hit {MAX_TOOL_CALLS_PER_PLAYER}-tool cap")
+            # Provider guardrail: stop draining if we've hit the per-player cap
+            if g.drain_loop_cap and tool_call_count >= g.drain_loop_cap:
+                self._event(f"WARN: {player.character.name} hit {g.drain_loop_cap}-tool cap")
                 self.transcript.add_system_event(
                     f"{player.character.name} hit per-player tool call cap "
-                    f"({MAX_TOOL_CALLS_PER_PLAYER}). Stopping drain loop."
+                    f"({g.drain_loop_cap}). Stopping drain loop."
                 )
                 # Still need to submit final results to close the API loop
                 player.submit_tool_results(tool_results_for_api)
@@ -1217,15 +1219,15 @@ class Session:
                             raw_text = str(raw_text)
                         candidate = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
 
-                        # Ollama-only: Role confusion in drain loop
-                        if _is_ollama:
+                        # Provider guardrail: Role confusion in drain loop
+                        if g.detect_role_confusion:
                             dm_match = re.search(r'\bDM:', candidate)
                             if dm_match:
                                 self._event(f"WARN: {player.character.name} role-confused (drain)")
                                 candidate = candidate[:dm_match.start()].strip()
 
-                        # Ollama-only: Language detection in drain loop
-                        if _is_ollama and candidate and _has_excessive_non_ascii(candidate):
+                        # Provider guardrail: Language detection in drain loop
+                        if g.detect_non_ascii and candidate and _has_excessive_non_ascii(candidate, g.non_ascii_threshold):
                             self._event(f"WARN: {player.character.name} non-English content (drain)")
                             candidate = ""
 

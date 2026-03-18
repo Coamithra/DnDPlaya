@@ -8,6 +8,7 @@ from dndplaya.mechanics.characters import create_default_party
 from dndplaya.mechanics.dice import DiceRoller
 from dndplaya.mechanics.state import GameState
 from dndplaya.orchestrator.session import Session, _has_excessive_non_ascii
+from dndplaya.agents.provider import ProviderGuardrails
 from dndplaya.orchestrator.transcript import SessionTranscript
 from dndplaya.config import Settings
 from pydantic import SecretStr
@@ -64,6 +65,7 @@ class TestSessionToolDispatch:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -325,6 +327,7 @@ class TestProcessToolCalls:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -434,6 +437,7 @@ class TestModuleReferenceTools:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -602,6 +606,7 @@ class TestMonsterRegistration:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -679,6 +684,7 @@ class TestHealAtFullHPGuard:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -761,6 +767,7 @@ class TestEmptySayRejection:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -815,7 +822,6 @@ class TestRoleConfusionDetection:
 
     def _make_session(self):
         settings = _make_settings()
-        settings.provider = "ollama"  # Ollama-only guardrail
         party = create_default_party(3)
         session = Session.__new__(Session)
         session.settings = settings
@@ -844,6 +850,7 @@ class TestRoleConfusionDetection:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails(detect_role_confusion=True)
 
         return session
 
@@ -901,7 +908,6 @@ class TestDrainLoopCap:
 
     def _make_session(self):
         settings = _make_settings()
-        settings.provider = "ollama"  # Ollama-only guardrail
         party = create_default_party(3)
         session = Session.__new__(Session)
         session.settings = settings
@@ -930,6 +936,7 @@ class TestDrainLoopCap:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails(drain_loop_cap=5)
 
         return session
 
@@ -1018,6 +1025,7 @@ class TestAllPassAutoAdvance:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails()
 
         return session
 
@@ -1127,7 +1135,6 @@ class TestNonAsciiDetection:
 
     def _make_session(self):
         settings = _make_settings()
-        settings.provider = "ollama"  # Ollama-only guardrail
         party = create_default_party(3)
         session = Session.__new__(Session)
         session.settings = settings
@@ -1156,6 +1163,7 @@ class TestNonAsciiDetection:
         session._STALE_THRESHOLD = 3
         session._consecutive_all_pass = 0
         session._ALL_PASS_THRESHOLD = 2
+        session._guardrails = ProviderGuardrails(detect_non_ascii=True)
         return session
 
     def test_empty_say_does_not_count_toward_cap(self):

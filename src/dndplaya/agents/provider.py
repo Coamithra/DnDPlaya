@@ -79,6 +79,30 @@ def _parse_tool_args(
     return {}
 
 
+# ── Provider guardrails ──────────────────────────────────────────────
+
+@dataclass
+class ProviderGuardrails:
+    """Declares what defensive guardrails a provider needs.
+
+    Local/smaller models (Ollama) need tighter constraints than cloud
+    models (Anthropic).  The orchestrator reads these flags instead of
+    checking provider names as strings.
+    """
+
+    drain_loop_cap: int | None = None
+    """Max tool calls per player per group-input round.  None = unlimited."""
+
+    detect_role_confusion: bool = False
+    """Strip player responses that contain 'DM:' (model playing both sides)."""
+
+    detect_non_ascii: bool = False
+    """Strip responses with >30% non-ASCII chars (language switching)."""
+
+    non_ascii_threshold: float = 0.30
+    """Fraction of non-ASCII chars that triggers the language guard."""
+
+
 # ── Normalised response ─────────────────────────────────────────────
 
 @dataclass
@@ -110,6 +134,9 @@ class LLMResponse:
 class LLMProvider(Protocol):
     """Interface that every backend must satisfy."""
 
+    @property
+    def guardrails(self) -> ProviderGuardrails: ...
+
     def call(
         self,
         messages: list[dict],
@@ -136,6 +163,11 @@ class AnthropicProvider:
             api_key=settings.anthropic_api_key.get_secret_value(),
         )
         self.model = settings.model
+        self._guardrails = ProviderGuardrails()  # no guardrails needed
+
+    @property
+    def guardrails(self) -> ProviderGuardrails:
+        return self._guardrails
 
     # -- public interface --------------------------------------------------
 
@@ -297,6 +329,15 @@ class OllamaProvider:
             api_key="ollama",  # Ollama ignores this but the SDK requires it
         )
         self.model = settings.ollama_model
+        self._guardrails = ProviderGuardrails(
+            drain_loop_cap=5,
+            detect_role_confusion=True,
+            detect_non_ascii=True,
+        )
+
+    @property
+    def guardrails(self) -> ProviderGuardrails:
+        return self._guardrails
 
     # -- public interface --------------------------------------------------
 
