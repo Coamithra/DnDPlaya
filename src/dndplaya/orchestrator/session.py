@@ -237,9 +237,44 @@ class Session:
                     self._dump_agent_logs()
                 else:
                     self._consecutive_no_tool_turns += 1
+
+                    # Local models often write narration as plain text instead
+                    # of using tools.  Synthesize tool calls, dispatch them
+                    # directly, and feed results back as a regular user message
+                    # (not submit_tool_results, which would create invalid history).
+                    if response.text and self.settings.provider == "ollama":
+                        synthesized = self._synthesize_dm_tools(response.text)
+                        if synthesized:
+                            self._consecutive_no_tool_turns = 0
+                            synth_response = AgentResponse(
+                                text=response.text,
+                                tool_calls=synthesized,
+                                raw_content=response.raw_content,
+                                stop_reason="tool_use",
+                            )
+                            tool_results = self._process_tool_calls(synth_response)
+                            if self._terminated or self._is_party_dead():
+                                break
+                            # Feed results back as a regular message, not submit_tool_results
+                            summary = "\n".join(f"[{r}]" for _, r in tool_results)
+                            if self.ui:
+                                self.ui.thinking_start("dm")
+                            compact_history(self.dm)
+                            response = self.dm.send_with_tools(summary)
+                            if self.ui:
+                                self.ui.thinking_stop("dm")
+                            self.total_turns += 1
+                            self._tick("DM")
+                            self._dump_agent_logs()
+                            continue
+
                     # DM produced text without tools — internal thinking, nudge to use tools
                     if response.text:
-                        self.transcript.add_system_event(f"DM internal: {response.text}")
+                        # Scrub Qwen template tokens before logging
+                        import re as _re
+                        clean_text = _re.sub(r'<\|im_start\|>.*?(?:<\|im_end\|>)?', '', response.text, flags=_re.DOTALL).strip()
+                        if clean_text:
+                            self.transcript.add_system_event(f"DM internal: {clean_text}")
 
                     if self.ui:
                         self.ui.thinking_start("dm")
@@ -350,7 +385,10 @@ class Session:
         return None
 
     def _estimate_current_cost(self) -> float:
-        """Estimate current session cost from all agents."""
+        """Estimate current session cost from all agents. Returns 0 for local providers."""
+        if self.settings.provider == "ollama":
+            return 0.0
+
         PRICING = {
             "claude-haiku-4-5-20251001": (0.80, 4.00, 1.00, 0.08),
             "claude-sonnet-4-6-20250514": (3.00, 15.00, 3.75, 0.30),
@@ -365,6 +403,71 @@ class Session:
         total_cr = sum(a.total_cache_read_tokens for a in agents)
         non_cached = total_in - total_cr
         return (non_cached * ip + total_out * op + total_cw * cwp + total_cr * crp) / 1_000_000
+
+    # --- Local model helpers ---
+
+    @staticmethod
+    def _clean_local_model_text(text: str) -> str:
+        """Strip XML/JSON tool-call artifacts from local model text output."""
+        import re
+        # Remove Qwen chat template delimiters
+        text = re.sub(r'<\|im_start\|>.*?(?:<\|im_end\|>)?', '', text, flags=re.DOTALL)
+        text = re.sub(r'<\|im_end\|>', '', text)
+        # Remove XML-like tool call tags and their JSON content
+        text = re.sub(r'</?tool_call>', '', text)
+        # Remove JSON tool call objects {"name": "...", "arguments": {...}}
+        text = re.sub(r'\{"name":\s*"\w+",\s*"arguments":\s*\{[^}]*\}\}', '', text)
+        # Remove garbled prefixes Qwen generates before tool calls
+        text = re.sub(r'\b\w*(StateChange|Button|Asstist)\w*', '', text, flags=re.IGNORECASE)
+        # Remove [URGENCY: N] tags (already parsed elsewhere)
+        text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', text)
+        # Clean up extra whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        return text
+
+    def _synthesize_dm_tools(self, text: str) -> list:
+        """Synthesize tool calls from DM plain-text output (local models).
+
+        Local models often write narration as prose instead of using narrate().
+        This extracts the narration and optionally adds request_group_input()
+        if the text looks like the DM is asking for player actions.
+        """
+        import re
+        from ..agents.base import ToolCall
+
+        calls: list[ToolCall] = []
+
+        # Strip out any text that looks like tool-call syntax the model wrote
+        # (already handled by the provider, but may still appear)
+        clean = re.sub(r'\(?request_group_input\s*\(?\)?\)?', '', text).strip()
+        clean = re.sub(r'\(?narrate\s*\([^)]*\)\)?', '', clean).strip()
+        # Strip Qwen chat template delimiters
+        clean = re.sub(r'<\|im_start\|>.*?(?:<\|im_end\|>)?', '', clean, flags=re.DOTALL).strip()
+
+        if clean:
+            calls.append(ToolCall(
+                id=f"synth_narrate",
+                name="narrate",
+                arguments={"text": clean},
+            ))
+
+        # If the DM asks a question or prompts for action, add group input
+        prompt_patterns = [
+            r'what do you do',
+            r'what does .+ do',
+            r'what would you like',
+            r'how do you proceed',
+            r'what.+action',
+            r'discuss amongst yourselves',
+        ]
+        if any(re.search(p, text, re.IGNORECASE) for p in prompt_patterns):
+            calls.append(ToolCall(
+                id=f"synth_group_input",
+                name="request_group_input",
+                arguments={},
+            ))
+
+        return calls
 
     # --- Combat/skill handlers ---
 
@@ -679,13 +782,21 @@ class Session:
             return []
 
         results: list[tuple[PlayerAgent, str, int, list[str]]] = []
-        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-            futures = [
-                pool.submit(_call, p, chat, suffix)
-                for p, chat, suffix in tasks
-            ]
-            for future in as_completed(futures):
-                results.append(future.result())
+
+        # Local providers (Ollama) can only run one inference at a time,
+        # so serial calls avoid thread overhead. Cloud APIs benefit from
+        # parallel calls (~4x faster with ThreadPoolExecutor).
+        if self.settings.provider == "ollama":
+            for p, chat, suffix in tasks:
+                results.append(_call(p, chat, suffix))
+        else:
+            with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+                futures = [
+                    pool.submit(_call, p, chat, suffix)
+                    for p, chat, suffix in tasks
+                ]
+                for future in as_completed(futures):
+                    results.append(future.result())
         self._dump_agent_logs()
         return results
 
@@ -749,10 +860,12 @@ class Session:
         ]
         self.transcript.add_player_action(winner[0].character.name, winner[1])
 
-        # Append winner to the chat — subsequent calls see it in the cache
-        chat += f"\n{winner[0].character.name}: {winner[1]}"
-        for mech in winner[3]:
-            chat += f"\n[{mech}]"
+        # Append winner to the chat — subsequent calls see it in the cache.
+        # Skip "pass" entries to avoid encouraging other players to pass.
+        if winner[1] and winner[1] != "pass":
+            chat += f"\n{winner[0].character.name}: {winner[1]}"
+            for mech in winner[3]:
+                chat += f"\n[{mech}]"
 
         # UI: show winner's speech
         if self.ui and winner[1] and winner[1] != "pass":
@@ -857,10 +970,11 @@ class Session:
             thread.append((fw[0].character.name, fw[1], fw[3]))
             self.transcript.add_player_action(fw[0].character.name, fw[1])
 
-            # Append winner to the chat
-            chat += f"\n{fw[0].character.name}: {fw[1]}"
-            for mech in fw[3]:
-                chat += f"\n[{mech}]"
+            # Append winner to the chat (skip "pass" to avoid encouraging others)
+            if fw[1] and fw[1] != "pass":
+                chat += f"\n{fw[0].character.name}: {fw[1]}"
+                for mech in fw[3]:
+                    chat += f"\n[{mech}]"
 
             # UI: show follow-up winner's speech
             if self.ui and fw[1] and fw[1] != "pass":
@@ -913,16 +1027,23 @@ class Session:
         has_pass = False
 
         if not response.tool_calls:
-            # Fallback: player responded with plain text instead of tools
-            return response.text, urgency, mechanical_results
+            # Fallback: player responded with plain text instead of tools.
+            # Clean up common local-model garbage (XML tags, JSON fragments).
+            text = response.text
+            if self.settings.provider == "ollama" and text:
+                text = self._clean_local_model_text(text)
+            return text, urgency, mechanical_results
 
         # Process tool calls
         tool_results_for_api: list[tuple[str, str]] = []
         for tc in response.tool_calls:
             if tc.name == "say":
-                say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', tc.arguments.get("text", "")).strip()
-                urgency = tc.arguments.get("urgency", 3)
-                urgency = max(1, min(5, urgency))
+                raw_text = tc.arguments.get("text", "")
+                if not isinstance(raw_text, str):
+                    raw_text = str(raw_text)
+                say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
+                raw_urg = tc.arguments.get("urgency", 3)
+                urgency = max(1, min(5, int(raw_urg) if isinstance(raw_urg, (int, float)) else 3))
                 tool_results_for_api.append((tc.id, "Said."))
             elif tc.name == "pass_turn":
                 has_pass = True
@@ -958,9 +1079,14 @@ class Session:
             # Model responded with more tool calls — process them
             tool_results_for_api = []
             for tc in followup.tool_calls:
-                if tc.name == "say" and not say_text:
-                    say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', tc.arguments.get("text", "")).strip()
-                    urgency = max(1, min(5, tc.arguments.get("urgency", 3)))
+                if tc.name == "say":
+                    if not say_text:
+                        raw_text = tc.arguments.get("text", "")
+                        if not isinstance(raw_text, str):
+                            raw_text = str(raw_text)
+                        say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
+                        raw_urg = tc.arguments.get("urgency", 3)
+                        urgency = max(1, min(5, int(raw_urg) if isinstance(raw_urg, (int, float)) else 3))
                     tool_results_for_api.append((tc.id, "Said."))
                 elif tc.name == "pass_turn":
                     has_pass = True

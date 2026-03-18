@@ -6,21 +6,25 @@ AI-powered D&D dungeon playtesting tool. Feed it a dungeon module PDF, and a par
 
 ```bash
 pip install -e ".[dev]"       # Install dependencies
-cp .env.example .env          # Add ANTHROPIC_API_KEY
-vi dndplaya.ini               # Tweak session settings (model, music, reviews, etc.)
+cp .env.example .env          # Add ANTHROPIC_API_KEY (not needed for Ollama)
+vi dndplaya.ini               # Tweak session settings (provider, model, music, reviews, etc.)
 dndplaya run dungeon.pdf      # Run a playtest (console)
 dndplaya ui dungeon.pdf       # Run with live web UI (opens browser)
 dndplaya parse dungeon.pdf    # Test PDF parsing only
-python -m pytest tests/ -v    # Run tests (236 tests)
+python -m pytest tests/ -v    # Run tests (254 tests)
+
+# Run with local Ollama (free):
+ollama pull qwen2.5:14b       # Download model (~9 GB)
+dndplaya run dungeon.pdf --provider ollama --ollama-model qwen2.5:14b
 ```
 
 ## Configuration
 
 Three-layer config (later wins): `dndplaya.ini` → `.env` → CLI flags.
 
-- **`dndplaya.ini`** — session defaults: model, party level, max turns, UI port, music dir, no_reviews, thinking. See the file for all options.
-- **`.env`** — secrets only: `ANTHROPIC_API_KEY`
-- **CLI flags** — override any INI value per-run (e.g. `--level 5`, `--no-reviews`, `--music ./tracks`)
+- **`dndplaya.ini`** — session defaults: provider, model, party level, max turns, UI port, music dir, no_reviews, thinking. See the file for all options.
+- **`.env`** — secrets only: `ANTHROPIC_API_KEY` (not needed for Ollama)
+- **CLI flags** — override any INI value per-run (e.g. `--level 5`, `--provider ollama`, `--ollama-model qwen2.5:14b`)
 
 ## Architecture
 
@@ -52,7 +56,8 @@ The DM agent receives a pre-game summary (not the full module) and uses page-bas
 
 - `src/dndplaya/mechanics/` — D&D Lite: seeded dice (incl. expression parser for "2d6+3"), character/monster stats with skills + initiative bonuses, game state tracking. CombatResolver kept for legacy/`parse` path.
 - `src/dndplaya/pdf/` — PDF→Markdown (pymupdf4llm) + image extraction (pymupdf) + page-aware extraction (`pages.py`), regex-based chunking into rooms/encounters (used by `parse` command)
-- `src/dndplaya/agents/` — Claude API wrapper with retry logic + tool use + prompt caching + optional extended thinking, DM agent (summary + 11 tools + optional `change_music`), player agents (2 tools + urgency), pre-game summarizer, 4 MDA archetype player agents, post-session critic
+- `src/dndplaya/agents/provider.py` — LLM provider abstraction: `AnthropicProvider` (prompt caching, thinking, retry) and `OllamaProvider` (OpenAI-compatible API, tool validation + retry). `create_provider(settings)` factory.
+- `src/dndplaya/agents/` — LLM agent layer with provider abstraction + tool use + prompt caching + optional extended thinking, DM agent (summary + 11 tools + optional `change_music`), player agents (2 tools + urgency), pre-game summarizer, 4 MDA archetype player agents, post-session critic
 - `src/dndplaya/orchestrator/` — DM conversation loop with tool dispatch, investment/urgency-based group input (parallel player API calls via ThreadPoolExecutor), player tool resolution, monster tracking, transcript recording, TPK detection, reference metric tracking, live agent log dumping
 - `src/dndplaya/feedback/` — Narrative generation, per-agent "What I Liked / Take a Look At" reviews with error recovery
 - `src/dndplaya/cli.py` — Click CLI: `run`, `parse`, `report`, `ui` commands; CLI flags override INI settings
@@ -91,7 +96,8 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 
 ## Key Design Decisions
 
-- **Model**: `claude-haiku-4-5-20241022` for all agents (cheap, ~$0.50-1.00/run)
+- **LLM provider abstraction**: `BaseAgent` delegates all API calls to a `LLMProvider` (protocol). `AnthropicProvider` handles prompt caching, extended thinking, and Anthropic retry logic. `OllamaProvider` speaks the OpenAI-compatible API, translates Anthropic message/tool formats to OpenAI on every call, and validates tool calls with retry (up to 2 retries on malformed calls, with error feedback to the model). History is stored in Anthropic format internally; `OllamaProvider` translates at call time. `create_provider(settings)` factory selects based on `settings.provider`.
+- **Model**: `claude-haiku-4-5-20241022` for all agents (cheap, ~$0.50-1.00/run) or local via Ollama (free, recommended: `qwen2.5:14b`)
 - **Orchestrator as physics engine**: All dice mechanics (skill checks, attacks, initiative, HP) resolved by the orchestrator. DM narrates; players act via tools.
 - **Character skills**: Per-class skill bonuses computed from 5e proficiency formula. `compute_skills(class, level)` → dict of skill → bonus. Includes saving throw proficiencies.
 - **Character pronouns**: Each character has `pronouns` field (e.g. "he/him", "she/her"). Propagated to DM party description and player system prompts. DM instructed to never misgender.
@@ -121,7 +127,7 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 ## Testing
 
 ```bash
-python -m pytest tests/ -v                           # All 236 tests
+python -m pytest tests/ -v                           # All 254 tests
 python -m pytest tests/test_characters.py -v         # Character creation + skills
 python -m pytest tests/test_combat.py -v             # Combat only
 python -m pytest tests/test_pdf_chunker.py -v        # PDF parsing only
@@ -134,9 +140,10 @@ python -m pytest tests/test_player_tools.py -v       # Player tool definitions
 python -m pytest tests/test_dice_expression.py -v    # Dice expression parsing
 python -m pytest tests/test_context.py -v            # History compaction (150k threshold)
 python -m pytest tests/test_config.py -v             # Settings/config
+python -m pytest tests/test_provider_ollama.py -v    # Ollama provider: message/tool translation, validation
 ```
 
-Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer, data models, agent base + tool use + prompt caching (mocked API), session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, and edge cases. No API key needed for tests.
+Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer, data models, agent base + tool use + prompt caching (mocked provider), Ollama provider message/tool format translation + tool validation + config, session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, and edge cases. No API key needed for tests.
 
 ## TODO (from playtesting sessions)
 
@@ -151,5 +158,5 @@ Tests cover: dice determinism + expression parsing, character/monster creation, 
 
 ## Dependencies
 
-Runtime: `anthropic`, `pymupdf4llm`, `pydantic`, `python-dotenv`, `click`, `rich`, `aiohttp`
+Runtime: `anthropic`, `openai`, `pymupdf4llm`, `pydantic`, `python-dotenv`, `click`, `rich`, `aiohttp`
 Dev: `pytest`, `pytest-asyncio`, `ruff`

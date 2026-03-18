@@ -70,10 +70,9 @@ class DMAgent(BaseAgent):
                 "text": "Above are the map images from the module. Use them to understand the dungeon layout.",
             })
             # Call the base class internals directly with the multipart content
-            from anthropic.types import MessageParam
-            messages: list[MessageParam] = [{"role": "user", "content": content}]
-            response = self._make_api_call(messages, use_tools=True)
-            return self._process_tool_response(response, content)
+            messages: list[dict] = [{"role": "user", "content": content}]
+            resp = self._make_api_call(messages, use_tools=True)
+            return self._process_response(resp, content)
         return super().send_with_tools(user_message)
 
     def add_runnability_note(self, note: str) -> None:

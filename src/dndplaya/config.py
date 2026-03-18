@@ -136,8 +136,19 @@ class Settings(BaseModel):
         default_factory=lambda: _ini_bool("ui", "thinking", False)
     )
 
+    # Provider settings
+    provider: str = Field(
+        default_factory=lambda: _ini_str("session", "provider", "anthropic")
+    )
+    ollama_model: str = Field(
+        default_factory=lambda: _ini_str("session", "ollama_model", "qwen2.5:14b")
+    )
+    ollama_url: str = Field(
+        default_factory=lambda: _ini_str("session", "ollama_url", "http://localhost:11434")
+    )
+
     def ensure_api_key(self) -> None:
-        if not self.anthropic_api_key.get_secret_value():
+        if self.provider == "anthropic" and not self.anthropic_api_key.get_secret_value():
             raise ValueError(
                 "ANTHROPIC_API_KEY is required. Set it in .env or as an environment variable."
             )

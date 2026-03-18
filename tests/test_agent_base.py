@@ -1,10 +1,11 @@
-"""Tests for agents/base.py — BaseAgent with mocked API."""
+"""Tests for agents/base.py — BaseAgent with mocked provider."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 from dndplaya.agents.base import BaseAgent, ToolCall, AgentResponse
+from dndplaya.agents.provider import LLMResponse, ToolCall as ProviderToolCall
 from dndplaya.config import Settings
 
 
@@ -18,21 +19,20 @@ def _mock_response(
     text: str = "Hello!",
     input_tokens: int = 10,
     output_tokens: int = 5,
-    cache_creation_input_tokens: int = 0,
-    cache_read_input_tokens: int = 0,
-):
-    """Create a mock API response with a TextBlock."""
-    from anthropic.types import TextBlock, Usage
-    response = MagicMock()
-    response.content = [TextBlock(type="text", text=text)]
-    response.usage = Usage(
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> LLMResponse:
+    """Create a mock LLMResponse with text content."""
+    return LLMResponse(
+        text_parts=[text] if text else [],
+        tool_calls=[],
+        raw_content=[{"type": "text", "text": text}] if text else [],
+        stop_reason="end_turn",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cache_creation_input_tokens=cache_creation_input_tokens,
-        cache_read_input_tokens=cache_read_input_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_read_tokens=cache_read_tokens,
     )
-    response.stop_reason = "end_turn"
-    return response
 
 
 def _mock_tool_response(
@@ -42,44 +42,45 @@ def _mock_tool_response(
     tool_input: dict | None = None,
     input_tokens: int = 10,
     output_tokens: int = 5,
-    cache_creation_input_tokens: int = 0,
-    cache_read_input_tokens: int = 0,
-):
-    """Create a mock API response with text + tool use blocks."""
-    from anthropic.types import TextBlock, ToolUseBlock, Usage
-    content = []
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> LLMResponse:
+    """Create a mock LLMResponse with text + tool use."""
+    text_parts = [text] if text else []
+    raw_content = []
     if text:
-        content.append(TextBlock(type="text", text=text))
-    content.append(ToolUseBlock(
-        type="tool_use",
-        id=tool_id,
-        name=tool_name,
-        input=tool_input or {"modifier": 5, "dc": 15, "description": "test"},
-    ))
-    response = MagicMock()
-    response.content = content
-    response.usage = Usage(
+        raw_content.append({"type": "text", "text": text})
+    tool_args = tool_input or {"modifier": 5, "dc": 15, "description": "test"}
+    raw_content.append({
+        "type": "tool_use",
+        "id": tool_id,
+        "name": tool_name,
+        "input": tool_args,
+    })
+    return LLMResponse(
+        text_parts=text_parts,
+        tool_calls=[ProviderToolCall(id=tool_id, name=tool_name, arguments=tool_args)],
+        raw_content=raw_content,
+        stop_reason="tool_use",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cache_creation_input_tokens=cache_creation_input_tokens,
-        cache_read_input_tokens=cache_read_input_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_read_tokens=cache_read_tokens,
     )
-    response.stop_reason = "tool_use"
-    return response
 
 
 class TestBaseAgentSend:
     def test_send_returns_text(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "You are a test.", settings)
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("Hi there")):
+        with patch.object(agent.provider, "call", return_value=_mock_response("Hi there")):
             result = agent.send("Hello")
         assert result == "Hi there"
 
     def test_send_tracks_tokens(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        with patch.object(agent.client.messages, "create", return_value=_mock_response(input_tokens=50, output_tokens=20)):
+        with patch.object(agent.provider, "call", return_value=_mock_response(input_tokens=50, output_tokens=20)):
             agent.send("msg1")
         assert agent.total_input_tokens == 50
         assert agent.total_output_tokens == 20
@@ -88,9 +89,9 @@ class TestBaseAgentSend:
     def test_send_accumulates_history(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("r1")):
+        with patch.object(agent.provider, "call", return_value=_mock_response("r1")):
             agent.send("msg1")
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("r2")):
+        with patch.object(agent.provider, "call", return_value=_mock_response("r2")):
             agent.send("msg2")
         assert len(agent.history) == 4  # 2 user + 2 assistant
         assert agent.history[0].content == "msg1"
@@ -102,9 +103,8 @@ class TestBaseAgentSend:
         """If the API call fails, history should not have a dangling user message."""
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        import anthropic
-        with patch.object(agent.client.messages, "create", side_effect=anthropic.APIConnectionError(request=MagicMock())):
-            with pytest.raises(anthropic.APIConnectionError):
+        with patch.object(agent.provider, "call", side_effect=RuntimeError("connection failed")):
+            with pytest.raises(RuntimeError):
                 agent.send("this should fail")
         # History should be empty — the message was NOT committed
         assert len(agent.history) == 0
@@ -112,21 +112,16 @@ class TestBaseAgentSend:
     def test_send_raises_on_empty_response(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        response = MagicMock()
-        response.content = []
-        with patch.object(agent.client.messages, "create", return_value=response):
-            with pytest.raises(ValueError, match="Empty response"):
+        empty_resp = LLMResponse(text_parts=[], raw_content=[], stop_reason="end_turn")
+        with patch.object(agent.provider, "call", return_value=empty_resp):
+            with pytest.raises(ValueError, match="No text content"):
                 agent.send("hello")
 
     def test_send_raises_on_no_text_content(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        response = MagicMock()
-        block = MagicMock()
-        block.__class__.__name__ = "ToolUseBlock"
-        type(block).text = PropertyMock(side_effect=AttributeError)
-        response.content = [block]
-        with patch.object(agent.client.messages, "create", return_value=response):
+        no_text = LLMResponse(text_parts=[], raw_content=[], stop_reason="end_turn")
+        with patch.object(agent.provider, "call", return_value=no_text):
             with pytest.raises(ValueError, match="No text content"):
                 agent.send("hello")
 
@@ -135,7 +130,7 @@ class TestBaseAgentReset:
     def test_reset_clears_state(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        with patch.object(agent.client.messages, "create", return_value=_mock_response()):
+        with patch.object(agent.provider, "call", return_value=_mock_response()):
             agent.send("msg")
         agent.reset()
         assert len(agent.history) == 0
@@ -149,7 +144,7 @@ class TestBaseAgentToolUse:
         settings = _make_settings()
         tools = [{"name": "test_tool", "description": "test", "input_schema": {"type": "object", "properties": {}}}]
         agent = BaseAgent("Test", "Sys", settings, tools=tools)
-        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response("Narration", "roll_check")):
+        with patch.object(agent.provider, "call", return_value=_mock_tool_response("Narration", "roll_check")):
             result = agent.send_with_tools("Do something")
         assert isinstance(result, AgentResponse)
         assert result.text == "Narration"
@@ -161,7 +156,7 @@ class TestBaseAgentToolUse:
         settings = _make_settings()
         tools = [{"name": "test_tool", "description": "test", "input_schema": {"type": "object", "properties": {}}}]
         agent = BaseAgent("Test", "Sys", settings, tools=tools)
-        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response("text")):
+        with patch.object(agent.provider, "call", return_value=_mock_tool_response("text")):
             agent.send_with_tools("msg")
         assert len(agent.history) == 2
         assert agent.history[0].role == "user"
@@ -172,7 +167,7 @@ class TestBaseAgentToolUse:
     def test_send_with_tools_tracks_tokens(self):
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings, tools=[])
-        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response(input_tokens=100, output_tokens=50)):
+        with patch.object(agent.provider, "call", return_value=_mock_tool_response(input_tokens=100, output_tokens=50)):
             agent.send_with_tools("msg")
         assert agent.total_input_tokens == 100
         assert agent.total_output_tokens == 50
@@ -181,11 +176,11 @@ class TestBaseAgentToolUse:
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings, tools=[])
         # First, simulate a send_with_tools that committed tool use to history
-        with patch.object(agent.client.messages, "create", return_value=_mock_tool_response("narration", tool_id="toolu_1")):
+        with patch.object(agent.provider, "call", return_value=_mock_tool_response("narration", tool_id="toolu_1")):
             agent.send_with_tools("start")
 
         # Now submit tool results
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("Next step")):
+        with patch.object(agent.provider, "call", return_value=_mock_response("Next step")):
             result = agent.submit_tool_results([("toolu_1", "Roll result: 15")])
         assert isinstance(result, AgentResponse)
         assert len(agent.history) == 4  # 2 from send_with_tools + 2 from submit
@@ -207,7 +202,7 @@ class TestBaseAgentToolUse:
         """When API returns only text (no tools), AgentResponse should have empty tool_calls."""
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings, tools=[])
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("Just text")):
+        with patch.object(agent.provider, "call", return_value=_mock_response("Just text")):
             result = agent.send_with_tools("msg")
         assert result.text == "Just text"
         assert result.tool_calls == []
@@ -217,7 +212,7 @@ class TestBaseAgentToolUse:
         """send_with_tools works even when no tools are set (just acts like send)."""
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("response")):
+        with patch.object(agent.provider, "call", return_value=_mock_response("response")):
             result = agent.send_with_tools("msg")
         assert result.text == "response"
 
@@ -250,28 +245,27 @@ class TestPromptCaching:
         assert result == []
 
     def test_cache_control_in_api_call(self):
-        """Verify _make_api_call passes cache_control in the system kwarg."""
+        """Verify provider.call receives the system prompt for caching."""
         settings = _make_settings()
         agent = BaseAgent("Test", "You are a test.", settings)
-        with patch.object(agent.client.messages, "create", return_value=_mock_response("Hi")) as mock_create:
+        with patch.object(agent.provider, "call", return_value=_mock_response("Hi")) as mock_call:
             agent.send("Hello")
-        call_kwargs = mock_create.call_args[1]
-        system = call_kwargs["system"]
-        assert isinstance(system, list)
-        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        call_kwargs = mock_call.call_args[1]
+        # The provider receives the raw system prompt — it handles caching internally
+        assert call_kwargs["system"] == "You are a test."
 
     def test_cache_tokens_tracked_on_send(self):
         """Cache creation and read tokens are tracked via send()."""
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        resp = _mock_response(cache_creation_input_tokens=500, cache_read_input_tokens=0)
-        with patch.object(agent.client.messages, "create", return_value=resp):
+        resp = _mock_response(cache_creation_tokens=500, cache_read_tokens=0)
+        with patch.object(agent.provider, "call", return_value=resp):
             agent.send("msg1")
         assert agent.total_cache_creation_tokens == 500
         assert agent.total_cache_read_tokens == 0
         # Second call reads from cache
-        resp2 = _mock_response(cache_creation_input_tokens=0, cache_read_input_tokens=500)
-        with patch.object(agent.client.messages, "create", return_value=resp2):
+        resp2 = _mock_response(cache_creation_tokens=0, cache_read_tokens=500)
+        with patch.object(agent.provider, "call", return_value=resp2):
             agent.send("msg2")
         assert agent.total_cache_creation_tokens == 500
         assert agent.total_cache_read_tokens == 500
@@ -280,8 +274,8 @@ class TestPromptCaching:
         """Cache tokens tracked via send_with_tools()."""
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings, tools=[])
-        resp = _mock_tool_response(cache_creation_input_tokens=200, cache_read_input_tokens=100)
-        with patch.object(agent.client.messages, "create", return_value=resp):
+        resp = _mock_tool_response(cache_creation_tokens=200, cache_read_tokens=100)
+        with patch.object(agent.provider, "call", return_value=resp):
             agent.send_with_tools("msg")
         assert agent.total_cache_creation_tokens == 200
         assert agent.total_cache_read_tokens == 100
@@ -290,8 +284,8 @@ class TestPromptCaching:
         """get_token_usage() includes cache metrics."""
         settings = _make_settings()
         agent = BaseAgent("Test", "Sys", settings)
-        resp = _mock_response(cache_creation_input_tokens=300, cache_read_input_tokens=150)
-        with patch.object(agent.client.messages, "create", return_value=resp):
+        resp = _mock_response(cache_creation_tokens=300, cache_read_tokens=150)
+        with patch.object(agent.provider, "call", return_value=resp):
             agent.send("msg")
         usage = agent.get_token_usage()
         assert usage["cache_creation_tokens"] == 300
