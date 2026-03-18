@@ -11,6 +11,8 @@ build/
 venv/
 output/runs/
 *.pdf
+*.mp3
+music/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/

@@ -98,10 +98,38 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name.lower())
 
 
+async def music_handler(request: web.Request) -> web.Response:
+    """Serve an MP3 file, resolving track base names to random variants."""
+    import random as _random
+
+    music_dir: Path | None = request.app.get("music_dir")
+    music_groups: dict[str, list[str]] | None = request.app.get("music_groups")
+    if not music_dir:
+        return web.Response(status=404, text="No music directory configured")
+
+    track_name = request.match_info["filename"]
+
+    # Resolve base name (e.g. "Combat") to a random variant file
+    if music_groups and track_name in music_groups:
+        filename = _random.choice(music_groups[track_name])
+    else:
+        filename = track_name + ".mp3"
+
+    # Security: no path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return web.Response(status=400, text="Invalid filename")
+    path = music_dir / filename
+    if not path.exists():
+        return web.Response(status=404, text="Track not found")
+    return web.Response(body=path.read_bytes(), content_type="audio/mpeg")
+
+
 def start_ui(
     session_factory: Callable[[UIEmitter], object],
     port: int = 8080,
     log_dir: Path | None = None,
+    music_dir: Path | None = None,
+    music_groups: dict[str, list[str]] | None = None,
 ) -> None:
     """Start the UI server and run a session.
 
@@ -162,10 +190,13 @@ def start_ui(
         webbrowser.open(f"http://localhost:{port}")
 
     app = web.Application()
+    app["music_dir"] = music_dir
+    app["music_groups"] = music_groups
     app.on_startup.append(_on_startup)
     app.router.add_get("/", index_handler)
     app.router.add_get("/bg.png", bg_handler)
     app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/music/{filename}", music_handler)
 
     print(f"DnDPlaya UI starting on http://localhost:{port}")
     web.run_app(app, host="localhost", port=port, print=None)

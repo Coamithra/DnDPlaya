@@ -1,6 +1,31 @@
 """Tool definitions for the DM agent in Anthropic SDK format."""
 from __future__ import annotations
 
+
+def build_music_tool(track_names: list[str]) -> dict:
+    """Build the change_music tool definition with available tracks as enum."""
+    return {
+        "name": "change_music",
+        "description": (
+            "Change the background music to match the current mood or setting. "
+            "Use this to enhance atmosphere — switch to tense music before combat, "
+            "calm music during exploration, eerie music in dark dungeons, etc. "
+            "Call with 'silence' to stop the music."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "track": {
+                    "type": "string",
+                    "enum": track_names + ["silence"],
+                    "description": "Music track to play, or 'silence' to stop",
+                },
+            },
+            "required": ["track"],
+        },
+    }
+
+
 DM_TOOLS = [
     {
         "name": "narrate",

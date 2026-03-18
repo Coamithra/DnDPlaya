@@ -360,6 +360,34 @@ class TestProcessToolCalls:
         assert len(narrations) == 1
         assert narrations[0].content == "You enter a dark chamber."
 
+    def test_change_music_records_event(self):
+        session = self._make_session()
+        result = session._handle_change_music({"track": "combat"})
+        assert "Now playing: combat" in result
+        system_events = [
+            e for e in session.transcript.entries
+            if e.entry_type == "system"
+        ]
+        assert any("Music changed to: combat" in e.content for e in system_events)
+
+    def test_change_music_silence(self):
+        session = self._make_session()
+        result = session._handle_change_music({"track": "silence"})
+        assert result == "Music stopped."
+
+    def test_change_music_emits_ui_event(self):
+        session = self._make_session()
+        session.ui = MagicMock()
+        session._handle_change_music({"track": "tavern"})
+        session.ui.music_change.assert_called_once_with("tavern")
+
+    def test_change_music_no_ui(self):
+        session = self._make_session()
+        session.ui = None
+        # Should not raise even without UI
+        result = session._handle_change_music({"track": "dungeon"})
+        assert "Now playing: dungeon" in result
+
 
 class TestModuleReferenceTools:
     """Test the module reference tool handlers."""

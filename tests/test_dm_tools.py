@@ -1,7 +1,7 @@
 """Tests for DM tool definitions — validates schema correctness."""
 from __future__ import annotations
 
-from dndplaya.agents.dm_tools import DM_TOOLS
+from dndplaya.agents.dm_tools import DM_TOOLS, build_music_tool
 
 
 EXPECTED_TOOL_NAMES = [
@@ -152,3 +152,27 @@ class TestDMTools:
             assert len(tool["description"]) > 10, (
                 f"Tool '{tool['name']}' description too short"
             )
+
+
+class TestBuildMusicTool:
+    """Test the dynamic change_music tool builder."""
+
+    def test_basic_schema(self):
+        tool = build_music_tool(["combat", "tavern", "dungeon"])
+        assert tool["name"] == "change_music"
+        assert "description" in tool
+        schema = tool["input_schema"]
+        assert schema["type"] == "object"
+        assert "track" in schema["properties"]
+        assert schema["required"] == ["track"]
+
+    def test_enum_includes_tracks_and_silence(self):
+        tracks = ["combat", "tavern"]
+        tool = build_music_tool(tracks)
+        enum = tool["input_schema"]["properties"]["track"]["enum"]
+        assert enum == ["combat", "tavern", "silence"]
+
+    def test_empty_tracks_still_has_silence(self):
+        tool = build_music_tool([])
+        enum = tool["input_schema"]["properties"]["track"]["enum"]
+        assert enum == ["silence"]

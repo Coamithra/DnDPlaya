@@ -36,6 +36,7 @@ class PlayerAgent(BaseAgent):
         character: Character,
         archetype: str,
         enable_thinking: bool = False,
+        enable_reviews: bool = True,
     ):
         if archetype not in ARCHETYPES:
             raise ValueError(f"Unknown archetype: {archetype}. Must be one of {list(ARCHETYPES)}")
@@ -76,11 +77,15 @@ class PlayerAgent(BaseAgent):
         # Players use lower max_tokens — they should be 1-3 sentences
         player_settings = settings.model_copy(update={"max_tokens": min(512, settings.max_tokens)})
 
+        tools = PLAYER_TOOLS if enable_reviews else [
+            t for t in PLAYER_TOOLS if t["name"] != "review_note"
+        ]
+
         super().__init__(
             name=character.name,
             system_prompt=system,
             settings=player_settings,
-            tools=PLAYER_TOOLS,
+            tools=tools,
             enable_thinking=enable_thinking,
             thinking_budget=1024,
         )

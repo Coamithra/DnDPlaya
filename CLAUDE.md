@@ -7,11 +7,20 @@ AI-powered D&D dungeon playtesting tool. Feed it a dungeon module PDF, and a par
 ```bash
 pip install -e ".[dev]"       # Install dependencies
 cp .env.example .env          # Add ANTHROPIC_API_KEY
+vi dndplaya.ini               # Tweak session settings (model, music, reviews, etc.)
 dndplaya run dungeon.pdf      # Run a playtest (console)
 dndplaya ui dungeon.pdf       # Run with live web UI (opens browser)
 dndplaya parse dungeon.pdf    # Test PDF parsing only
-python -m pytest tests/ -v    # Run tests (226 tests)
+python -m pytest tests/ -v    # Run tests (236 tests)
 ```
+
+## Configuration
+
+Three-layer config (later wins): `dndplaya.ini` → `.env` → CLI flags.
+
+- **`dndplaya.ini`** — session defaults: model, party level, max turns, UI port, music dir, no_reviews, thinking. See the file for all options.
+- **`.env`** — secrets only: `ANTHROPIC_API_KEY`
+- **CLI flags** — override any INI value per-run (e.g. `--level 5`, `--no-reviews`, `--music ./tracks`)
 
 ## Architecture
 
@@ -43,15 +52,16 @@ The DM agent receives a pre-game summary (not the full module) and uses page-bas
 
 - `src/dndplaya/mechanics/` — D&D Lite: seeded dice (incl. expression parser for "2d6+3"), character/monster stats with skills + initiative bonuses, game state tracking. CombatResolver kept for legacy/`parse` path.
 - `src/dndplaya/pdf/` — PDF→Markdown (pymupdf4llm) + image extraction (pymupdf) + page-aware extraction (`pages.py`), regex-based chunking into rooms/encounters (used by `parse` command)
-- `src/dndplaya/agents/` — Claude API wrapper with retry logic + tool use + prompt caching + optional extended thinking, DM agent (summary + 11 tools), player agents (2 tools + urgency), pre-game summarizer, 4 MDA archetype player agents, post-session critic
+- `src/dndplaya/agents/` — Claude API wrapper with retry logic + tool use + prompt caching + optional extended thinking, DM agent (summary + 11 tools + optional `change_music`), player agents (2 tools + urgency), pre-game summarizer, 4 MDA archetype player agents, post-session critic
 - `src/dndplaya/orchestrator/` — DM conversation loop with tool dispatch, investment/urgency-based group input (parallel player API calls via ThreadPoolExecutor), player tool resolution, monster tracking, transcript recording, TPK detection, reference metric tracking, live agent log dumping
 - `src/dndplaya/feedback/` — Narrative generation, per-agent "What I Liked / Take a Look At" reviews with error recovery
-- `src/dndplaya/cli.py` — Click CLI: `run`, `parse`, `report`, `ui` commands with input validation
+- `src/dndplaya/cli.py` — Click CLI: `run`, `parse`, `report`, `ui` commands; CLI flags override INI settings
+- `dndplaya.ini` — INI config file for session/UI/output defaults (loaded by `config.py`)
 - `src/dndplaya/ui/` — Web-based live session viewer: aiohttp server + WebSocket + HTML/CSS/JS frontend with thought bubbles, speech bubbles, and typewriter text animation
 
 ## DM Tools
 
-The DM agent has 11 tools (defined in `agents/dm_tools.py`):
+The DM agent has 11 core tools (defined in `agents/dm_tools.py`) plus an optional `change_music` tool:
 
 | Tool | Purpose |
 |------|---------|
@@ -66,6 +76,7 @@ The DM agent has 11 tools (defined in `agents/dm_tools.py`):
 | `read_page(page_number)` | Read full text of a specific page (1-indexed) |
 | `next_page()` | Read the page after the last-read page |
 | `previous_page()` | Read the page before the last-read page |
+| `change_music(track)` | *Optional* — change background music in the web UI (requires music dir in INI or `--music` flag) |
 
 ## Player Tools
 
@@ -96,7 +107,8 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **DM-driven architecture**: DM receives a pre-game summary + map images, references specific pages during play via tools. No BFS room traversal or programmatic combat resolution. DM instructed never to narrate PC actions — only describe world, NPCs, monsters, and outcomes.
 - **Page-based module reference**: Instead of stuffing the full module into the system prompt, the DM gets a summary and uses `search_module`/`read_page`/`next_page`/`previous_page` to look up details. Module reference frequency is tracked as a metric.
 - **Tool use**: BaseAgent supports `send_with_tools()` and `submit_tool_results()` for the Anthropic tool use API. `Message.content` is `str | list` to handle tool use blocks.
-- **Extended thinking**: `BaseAgent` supports optional `enable_thinking` flag with configurable `thinking_budget` (min 1024 tokens). Thinking blocks are stored in history (with signature for API round-trip) and logged with `[thinking]...[/thinking]` tags in `dump_history()`. Enabled via `--thinking` CLI flag on the `ui` command for debugging player reasoning.
+- **Extended thinking**: `BaseAgent` supports optional `enable_thinking` flag with configurable `thinking_budget` (min 1024 tokens). Thinking blocks are stored in history (with signature for API round-trip) and logged with `[thinking]...[/thinking]` tags in `dump_history()`. Enabled via `[ui] thinking` in INI or `--thinking` CLI flag for debugging player reasoning.
+- **INI config**: `dndplaya.ini` provides session defaults (model, party_level, max_turns, seed), UI settings (port, music dir, no_reviews, thinking), and output dir. Loaded by `config.py` via `configparser`. `.env` is reserved for secrets (API key). CLI flags override INI values. Three-layer precedence: INI → .env → CLI.
 - **4 classes**: Fighter, Rogue, Wizard, Cleric with pre-computed stats + skills for levels 1–11
 - **Dice expression parser**: `DiceRoller.parse_and_roll("2d6+3")` supports multiple dice terms and +/- modifiers
 - **PDF parsing**: Image extraction (≥200x200px) for map images sent to DM. Page-aware extraction for reference tools. Heading-based room detection with regex fallbacks still available via `parse` command.
@@ -104,11 +116,12 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **Prompt injection guards**: Module summary wrapped in `<module-summary>` tags with explicit instruction to ignore embedded prompts
 - **Live web UI**: `dndplaya ui` launches an aiohttp server (HTTP+WebSocket). Session runs in a worker thread, emitting events via `UIEmitter` (thread-safe asyncio.Queue). Browser shows the table background image with CSS thought bubbles (bouncing dots, per-character timed to actual LLM latency) during API calls, central speech bubble with markdown-rendered typewriter animation for narration/player dialog, CSS-only speech arrow pointing at speaker, toast notifications for combat/skill results, and "press space to continue" flow. Character positions mapped to image art by class (Fighter=top-left, Cleric=top-right, Wizard=bottom-left, Rogue=bottom-right). Player follow-up rounds prefetch in the background while the user reads (triggered after typewriter completes via `typewriter_done` WebSocket message). F5 reconnect replays `session_start`. The `ui` parameter on `Session.__init__` is optional — `None` preserves the original headless console behavior.
 - **Live agent logs**: When `log_path` is set, `_dump_agent_logs()` appends timestamped snapshots of all agent conversation histories after every DM turn and player batch. Preserves full prompt/response history even though players replace their history each call via `set_cached_context`.
+- **Background music**: `[ui] music` in INI (or `--music DIR` CLI override) scans a directory for `.mp3` files. Filenames (sans extension) become track names, dynamically added to the DM's `change_music` tool as an enum. The DM chooses tracks based on mood/setting. The orchestrator emits a `music_change` WebSocket event, and the browser plays audio with a 1.5s crossfade. `"silence"` stops playback. Works only in `ui` mode — headless mode logs the event but plays nothing.
 
 ## Testing
 
 ```bash
-python -m pytest tests/ -v                           # All 226 tests
+python -m pytest tests/ -v                           # All 236 tests
 python -m pytest tests/test_characters.py -v         # Character creation + skills
 python -m pytest tests/test_combat.py -v             # Combat only
 python -m pytest tests/test_pdf_chunker.py -v        # PDF parsing only
@@ -123,7 +136,7 @@ python -m pytest tests/test_context.py -v            # History compaction (150k 
 python -m pytest tests/test_config.py -v             # Settings/config
 ```
 
-Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer, data models, agent base + tool use + prompt caching (mocked API), session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/TPK), DM + player tool schema validation, urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, and edge cases. No API key needed for tests.
+Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer, data models, agent base + tool use + prompt caching (mocked API), session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, and edge cases. No API key needed for tests.
 
 ## TODO (from playtesting sessions)
 

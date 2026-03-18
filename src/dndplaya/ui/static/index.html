@@ -202,6 +202,8 @@ body{
 </style>
 </head>
 <body>
+<audio id="music-player" loop preload="none" style="display:none"></audio>
+
 <div id="table">
   <div id="status">Connecting...</div>
 
@@ -279,6 +281,7 @@ function handleEvent(ev) {
     case 'game_event':     showToast(ev.text);                    break;
     case 'waiting':        enableContinue();                      break;
     case 'session_end':    showSessionEnd(ev.reason);             break;
+    case 'music_change':   changeMusic(ev.track);                 break;
   }
 }
 
@@ -543,6 +546,61 @@ function renderMarkdown(text) {
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
   html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, '<em>$1</em>');
   return html;
+}
+
+/* ── Music player ──────────────────────────────────────────── */
+
+const FADE_MS = 1500;
+let musicFading = null;
+
+function changeMusic(track) {
+  const audio = document.getElementById('music-player');
+
+  // Cancel any in-progress fade
+  if (musicFading) { clearInterval(musicFading); musicFading = null; }
+
+  if (track === 'silence') {
+    fadeOut(audio);
+    showToast('\u266b Music stopped');
+    return;
+  }
+
+  // If already playing, crossfade (fade out → switch → fade in)
+  if (!audio.paused && audio.src) {
+    fadeOut(audio, () => {
+      audio.src = '/music/' + encodeURIComponent(track);
+      audio.volume = 0;
+      audio.play().then(() => fadeIn(audio)).catch(() => {});
+    });
+  } else {
+    audio.src = '/music/' + encodeURIComponent(track);
+    audio.volume = 0;
+    audio.play().then(() => fadeIn(audio)).catch(() => {});
+  }
+  showToast('\u266b Now playing: ' + track);
+}
+
+function fadeIn(audio) {
+  const step = 50;
+  const increment = step / FADE_MS;
+  musicFading = setInterval(() => {
+    audio.volume = Math.min(1, audio.volume + increment);
+    if (audio.volume >= 1) { clearInterval(musicFading); musicFading = null; }
+  }, step);
+}
+
+function fadeOut(audio, onDone) {
+  if (audio.paused) { if (onDone) onDone(); return; }
+  const step = 50;
+  const decrement = step / FADE_MS;
+  musicFading = setInterval(() => {
+    audio.volume = Math.max(0, audio.volume - decrement);
+    if (audio.volume <= 0) {
+      clearInterval(musicFading); musicFading = null;
+      audio.pause();
+      if (onDone) onDone();
+    }
+  }, step);
 }
 
 connect();

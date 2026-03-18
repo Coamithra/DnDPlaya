@@ -50,6 +50,8 @@ class Session:
         log_path: Path | None = None,
         ui=None,
         enable_thinking: bool = False,
+        music_tracks: list[str] | None = None,
+        enable_reviews: bool = True,
     ):
         self.settings = settings
         self.dice = DiceRoller(seed=seed or settings.seed)
@@ -78,12 +80,16 @@ class Session:
                 summary=summary,
                 settings=settings,
                 map_images=map_images,
+                music_tracks=music_tracks,
+                enable_reviews=enable_reviews,
             )
         else:
             self.dm = DMAgent(
                 summary=module_markdown,
                 settings=settings,
                 map_images=map_images,
+                music_tracks=music_tracks,
+                enable_reviews=enable_reviews,
             )
 
         # Create player agents
@@ -97,6 +103,7 @@ class Session:
                 character=character,
                 archetype=archetype,
                 enable_thinking=enable_thinking,
+                enable_reviews=enable_reviews,
             )
             self.players.append(player)
             self._player_map[character.name.lower()] = player
@@ -298,6 +305,7 @@ class Session:
             "read_page": self._handle_read_page,
             "next_page": self._handle_next_page,
             "previous_page": self._handle_previous_page,
+            "change_music": self._handle_change_music,
         }
         handler = handlers.get(name)
         if not handler:
@@ -380,6 +388,15 @@ class Session:
             self.dm.add_runnability_note(text)
             self.transcript.add_system_event(f"DM review note: {text}")
         return "Noted."
+
+    def _handle_change_music(self, args: dict) -> str:
+        """Change the background music in the UI."""
+        track = args.get("track", "")
+        self.transcript.add_system_event(f"Music changed to: {track}")
+        self._event(f"Music: {track}")
+        if self.ui:
+            self.ui.music_change(track)
+        return f"Now playing: {track}" if track != "silence" else "Music stopped."
 
     def _handle_ask_skill_check(self, args: dict) -> str:
         player_name = args.get("player", "")

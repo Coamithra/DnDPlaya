@@ -27,6 +27,21 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name.lower())
 
 
+def _scan_music(music_dir: Path) -> tuple[list[str] | None, dict[str, list[str]] | None]:
+    """Scan a directory for MP3s, grouping variants like 'Combat (1).mp3'.
+
+    Returns (track_names, groups) or (None, None) if no tracks found.
+    """
+    groups: dict[str, list[str]] = {}
+    for p in sorted(music_dir.glob("*.mp3")):
+        # Strip trailing " (N)" to get the base name
+        base = re.sub(r"\s*\(\d+\)$", "", p.stem)
+        groups.setdefault(base, []).append(p.name)
+    if not groups:
+        return None, None
+    return sorted(groups.keys()), groups
+
+
 @click.group()
 def cli():
     """DnDPlaya - AI-powered D&D dungeon playtesting tool."""
@@ -36,11 +51,11 @@ def cli():
 @cli.command()
 @click.argument("pdf_path", type=click.Path(exists=True))
 @click.option("--party", default="default", help="Party preset name (default: default)")
-@click.option("--level", default=None, type=click.IntRange(1, 11), help="Party level 1-11 (overrides .env)")
+@click.option("--level", default=None, type=click.IntRange(1, 11), help="Party level 1-11 (overrides INI)")
 @click.option("--seed", default=None, type=int, help="Random seed for reproducibility")
 @click.option("--runs", default=1, type=click.IntRange(1), help="Number of runs")
 @click.option("--output", default=None, type=click.Path(), help="Output directory")
-@click.option("--max-turns", default=None, type=click.IntRange(1), help="Max DM turns (default: 100)")
+@click.option("--max-turns", default=None, type=click.IntRange(1), help="Max DM turns")
 def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: int, output: str | None, max_turns: int | None):
     """Run a playtesting session on a dungeon PDF."""
     settings = Settings()
@@ -50,6 +65,8 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
         settings.party_level = level
     if seed is not None:
         settings.seed = seed
+    if max_turns is not None:
+        settings.max_turns = max_turns
     settings.runs = runs
     if output:
         settings.output_dir = Path(output)
@@ -70,7 +87,7 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 
     # Run sessions
     for run_num in range(1, runs + 1):
-        run_seed = seed + run_num - 1 if seed is not None else None
+        run_seed = settings.seed + run_num - 1 if settings.seed is not None else None
 
         if runs > 1:
             console.print(f"\n--- Run {run_num}/{runs} ---")
@@ -85,7 +102,7 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
         char_party = create_default_party(settings.party_level)
 
         # Run session — DM uses summary + page-based reference tools
-        session_kwargs = dict(
+        session = Session(
             module_markdown=markdown,
             settings=settings,
             map_images=images,
@@ -94,10 +111,8 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
             pages=pages,
             summary=summary,
             log_path=log_path,
+            max_turns=settings.max_turns,
         )
-        if max_turns is not None:
-            session_kwargs["max_turns"] = max_turns
-        session = Session(**session_kwargs)
         result = session.run()
 
         # Generate reviews
@@ -199,20 +214,33 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 @click.argument("pdf_path", type=click.Path(exists=True))
 @click.option("--level", default=None, type=click.IntRange(1, 11), help="Party level 1-11")
 @click.option("--seed", default=None, type=int, help="Random seed")
-@click.option("--max-turns", default=None, type=click.IntRange(1), help="Max DM turns (default: 100)")
-@click.option("--port", default=8080, type=int, help="Web server port")
-@click.option("--thinking", is_flag=True, default=False, help="Enable extended thinking for player agents (debugging)")
-def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None, port: int, thinking: bool):
+@click.option("--max-turns", default=None, type=click.IntRange(1), help="Max DM turns")
+@click.option("--port", default=None, type=int, help="Web server port")
+@click.option("--thinking", default=None, type=bool, is_flag=True, help="Enable extended thinking")
+@click.option("--music", default=None, type=click.Path(exists=True, file_okay=False), help="Music directory")
+@click.option("--no-reviews", default=None, type=bool, is_flag=True, help="Disable review_note tools")
+def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None, port: int | None, thinking: bool | None, music: str | None, no_reviews: bool | None):
     """Run a playtesting session with live web UI."""
     from .ui.server import start_ui
 
     settings = Settings()
     settings.ensure_api_key()
 
+    # CLI overrides
     if level is not None:
         settings.party_level = level
     if seed is not None:
         settings.seed = seed
+    if max_turns is not None:
+        settings.max_turns = max_turns
+    if port is not None:
+        settings.port = port
+    if thinking is not None:
+        settings.thinking = thinking
+    if no_reviews is not None:
+        settings.no_reviews = no_reviews
+    if music is not None:
+        settings.music_dir = Path(music)
 
     console.print(f"DnDPlaya UI | Model: {settings.model}")
 
@@ -237,25 +265,43 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
 
     party = create_default_party(settings.party_level)
 
+    # Scan music directory for MP3 tracks
+    music_dir = settings.music_dir
+    music_tracks: list[str] | None = None
+    music_groups: dict[str, list[str]] | None = None
+    if music_dir and music_dir.exists():
+        music_tracks, music_groups = _scan_music(music_dir)
+        if music_tracks and music_groups:
+            for name in music_tracks:
+                variants = music_groups[name]
+                tag = f" ({len(variants)} variants)" if len(variants) > 1 else ""
+                console.print(f"  [green]*[/green] {name}{tag}")
+        else:
+            console.print("  Warning: no .mp3 files found in music directory")
+            music_dir = None
+    elif music_dir:
+        console.print(f"  Warning: music directory not found: {music_dir}")
+        music_dir = None
+
     def session_factory(emitter):
-        kwargs = dict(
+        return Session(
             module_markdown=markdown,
             settings=settings,
             map_images=images,
             party=party,
-            seed=seed,
+            seed=settings.seed,
             pages=pages,
             summary=summary,
             log_path=log_path,
             ui=emitter,
-            enable_thinking=thinking,
+            max_turns=settings.max_turns,
+            enable_thinking=settings.thinking,
+            music_tracks=music_tracks,
+            enable_reviews=not settings.no_reviews,
         )
-        if max_turns is not None:
-            kwargs["max_turns"] = max_turns
-        return Session(**kwargs)
 
-    console.print(f"Starting UI on http://localhost:{port}")
-    start_ui(session_factory, port=port, log_dir=run_dir)
+    console.print(f"Starting UI on http://localhost:{settings.port}")
+    start_ui(session_factory, port=settings.port, log_dir=run_dir, music_dir=music_dir, music_groups=music_groups)
 
 
 @cli.command()

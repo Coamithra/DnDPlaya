@@ -5,7 +5,7 @@ import base64
 from ..config import Settings
 from ..prompts import load_prompt
 from .base import BaseAgent
-from .dm_tools import DM_TOOLS
+from .dm_tools import DM_TOOLS, build_music_tool
 
 
 class DMAgent(BaseAgent):
@@ -16,6 +16,8 @@ class DMAgent(BaseAgent):
         summary: str,
         settings: Settings,
         map_images: list[tuple[bytes, str]] | None = None,
+        music_tracks: list[str] | None = None,
+        enable_reviews: bool = True,
     ):
         self.runnability_notes: list[str] = []
 
@@ -35,11 +37,17 @@ class DMAgent(BaseAgent):
             self._map_images.append((img_bytes, media_type))
             total_bytes += len(img_bytes)
 
+        tools = list(DM_TOOLS)
+        if not enable_reviews:
+            tools = [t for t in tools if t["name"] != "review_note"]
+        if music_tracks:
+            tools.append(build_music_tool(music_tracks))
+
         super().__init__(
             name="DM",
             system_prompt=system_text,
             settings=settings,
-            tools=DM_TOOLS,
+            tools=tools,
         )
 
     def send_with_tools(self, user_message: str):

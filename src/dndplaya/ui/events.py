@@ -50,6 +50,10 @@ class UIEmitter:
         self._last_session_start = event
         self._put(event)
 
+    def music_change(self, track: str) -> None:
+        """Change background music in the browser."""
+        self._put({"type": "music_change", "track": track})
+
     def session_end(self, reason: str) -> None:
         self._put({"type": "session_end", "reason": reason})
 
