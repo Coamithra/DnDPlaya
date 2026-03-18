@@ -34,6 +34,19 @@ def _char_key(name: str) -> str:
     return name.lower().replace(" ", "_")
 
 
+def _has_excessive_non_ascii(text: str, threshold: float = 0.30) -> bool:
+    """Return True if more than *threshold* fraction of characters are non-ASCII.
+
+    Used to detect when a local model (e.g. qwen2.5) switches to Chinese,
+    Russian, Thai, etc. mid-response.  Simple heuristic — no external
+    language-detection library needed.
+    """
+    if not text:
+        return False
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    return non_ascii / len(text) > threshold
+
+
 class Session:
     """Main game session: DM drives the adventure via tool use."""
 
@@ -119,6 +132,14 @@ class Session:
         self._narration_count = 0
         self._cost_budget = 3.00  # USD — abort if exceeded
         self._cache_check_turn = 10  # check cache health after this many turns
+
+        # Staleness detection — consecutive DM turns without module reference
+        self._turns_without_module_ref = 0
+        self._STALE_THRESHOLD = 3  # nudge after this many turns without a ref
+
+        # All-pass tracking — consecutive group inputs where no player contributed
+        self._consecutive_all_pass = 0
+        self._ALL_PASS_THRESHOLD = 2  # force story advance after this many
 
         # Optional UI emitter (None = headless / console mode)
         self.ui = ui
@@ -208,6 +229,11 @@ class Session:
                     )
                     break
 
+                # Staleness detection: track consecutive DM turns without
+                # a module reference tool (search_module, read_page, etc.)
+                # The counter is reset to 0 inside the ref tool handlers.
+                self._turns_without_module_ref += 1
+
                 # Early-out checks
                 abort_reason = self._check_early_outs()
                 if abort_reason:
@@ -218,6 +244,25 @@ class Session:
                     self._terminated = True
                     break
 
+                # Build a staleness nudge if the DM hasn't used module
+                # reference tools recently.
+                _stale_nudge = ""
+                if (
+                    self._turns_without_module_ref >= self._STALE_THRESHOLD
+                    and self.pages
+                ):
+                    _stale_nudge = (
+                        "\n[SYSTEM: You haven't consulted the module in "
+                        f"{self._turns_without_module_ref} turns. Use "
+                        "search_module or read_page to find what happens "
+                        "next in the dungeon. Do not improvise — check the "
+                        "module.]"
+                    )
+                    self.transcript.add_system_event(
+                        f"Staleness nudge injected (no module ref for "
+                        f"{self._turns_without_module_ref} turns)"
+                    )
+
                 if response.tool_calls:
                     self._consecutive_no_tool_turns = 0
                     # Process tool calls and submit results back to DM
@@ -225,6 +270,11 @@ class Session:
 
                     if self._terminated or self._is_party_dead():
                         break
+
+                    # Append staleness nudge to the last tool result if needed
+                    if _stale_nudge and tool_results:
+                        last_id, last_text = tool_results[-1]
+                        tool_results[-1] = (last_id, last_text + _stale_nudge)
 
                     if self.ui:
                         self.ui.thinking_start("dm")
@@ -257,6 +307,8 @@ class Session:
                                 break
                             # Feed results back as a regular message, not submit_tool_results
                             summary = "\n".join(f"[{r}]" for _, r in tool_results)
+                            if _stale_nudge:
+                                summary += _stale_nudge
                             if self.ui:
                                 self.ui.thinking_start("dm")
                             compact_history(self.dm)
@@ -276,12 +328,13 @@ class Session:
                         if clean_text:
                             self.transcript.add_system_event(f"DM internal: {clean_text}")
 
+                    nudge_msg = load_prompt("session_continue")
+                    if _stale_nudge:
+                        nudge_msg += _stale_nudge
                     if self.ui:
                         self.ui.thinking_start("dm")
                     compact_history(self.dm)
-                    response = self.dm.send_with_tools(
-                        load_prompt("session_continue")
-                    )
+                    response = self.dm.send_with_tools(nudge_msg)
                     if self.ui:
                         self.ui.thinking_stop("dm")
                     self.total_turns += 1
@@ -854,6 +907,35 @@ class Session:
             )
         )
 
+        # Check if ALL players passed in round 1
+        all_passed_r1 = all(
+            (text == "pass" or not text.strip() or urgency == 0)
+            for _, text, urgency, _ in round1_responses
+        )
+        if all_passed_r1:
+            self._consecutive_all_pass += 1
+            self.transcript.add_system_event(
+                f"All players passed ({self._consecutive_all_pass} consecutive)."
+            )
+            # After threshold, tell DM to advance the story instead of
+            # requesting more player input (players won't respond on retry).
+            if self._consecutive_all_pass >= self._ALL_PASS_THRESHOLD:
+                self.transcript.add_system_event(
+                    "All-pass threshold reached — injecting story advance nudge."
+                )
+                return (
+                    "Players have not responded for multiple rounds. "
+                    "Do NOT call request_group_input again. Instead, advance "
+                    "the story: use search_module to find the next encounter, "
+                    "roll_initiative to start combat, or use ask_skill_check "
+                    "to create a challenge. The party needs action, not more "
+                    "questions."
+                )
+            return "All players passed. No input received."
+        else:
+            # Reset counter on any meaningful input
+            self._consecutive_all_pass = 0
+
         winner = round1_responses[0]
         thread: list[tuple[str, str, list[str]]] = [
             (winner[0].character.name, winner[1], winner[3])
@@ -1035,6 +1117,9 @@ class Session:
             return text, urgency, mechanical_results
 
         # Process tool calls
+        tool_call_count = 0  # Fix 3: per-player drain loop cap
+        MAX_TOOL_CALLS_PER_PLAYER = 5
+
         tool_results_for_api: list[tuple[str, str]] = []
         for tc in response.tool_calls:
             if tc.name == "say":
@@ -1042,13 +1127,41 @@ class Session:
                 if not isinstance(raw_text, str):
                     raw_text = str(raw_text)
                 say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
+
+                # Fix 4: Role confusion — strip hallucinated DM responses
+                dm_match = re.search(r'\bDM:', say_text)
+                if dm_match:
+                    self._event(f"WARN: {player.character.name} role-confused (DM: in say)")
+                    self.transcript.add_system_event(
+                        f"Role confusion detected: {player.character.name} "
+                        "hallucinated DM response — stripped."
+                    )
+                    say_text = say_text[:dm_match.start()].strip()
+
+                # Iter 3 Fix 4: Language detection — strip non-English content
+                if say_text and _has_excessive_non_ascii(say_text):
+                    self._event(f"WARN: {player.character.name} non-English content detected — treated as pass")
+                    self.transcript.add_system_event(
+                        f"{player.character.name} sent non-English content — stripped."
+                    )
+                    say_text = ""
+
+                # Fix 2: Empty say() treated as pass (checked BEFORE incrementing tool count)
+                if not say_text:
+                    has_pass = True
+                    tool_results_for_api.append((tc.id, "Empty say — treated as pass."))
+                    continue
+
+                tool_call_count += 1
                 raw_urg = tc.arguments.get("urgency", 3)
                 urgency = max(1, min(5, int(raw_urg) if isinstance(raw_urg, (int, float)) else 3))
                 tool_results_for_api.append((tc.id, "Said."))
             elif tc.name == "pass_turn":
+                tool_call_count += 1
                 has_pass = True
                 tool_results_for_api.append((tc.id, "You passed your turn."))
             elif tc.name == "review_note":
+                tool_call_count += 1
                 note = tc.arguments.get("text", "")
                 if note:
                     player.add_engagement_note(note)
@@ -1057,21 +1170,36 @@ class Session:
                     )
                 tool_results_for_api.append((tc.id, "Noted."))
             elif tc.name == "attack":
+                tool_call_count += 1
                 result = self._resolve_player_attack(player, tc.arguments)
                 mechanical_results.append(result)
                 tool_results_for_api.append((tc.id, result))
             elif tc.name == "heal":
+                tool_call_count += 1
                 result = self._resolve_player_heal(player, tc.arguments)
                 mechanical_results.append(result)
                 tool_results_for_api.append((tc.id, result))
             else:
+                tool_call_count += 1
                 tool_results_for_api.append((tc.id, f"Unknown tool: {tc.name}"))
 
         # Submit results back to player — drain any follow-up tool calls
         # This loop ensures ALL tool_use blocks get matching tool_result blocks,
         # preventing "tool_use ids without tool_result" API errors on future calls.
+        # Fix 3: hard cap on total tool calls per player per group input round.
         max_drain = 5  # safety valve
         while tool_results_for_api and max_drain > 0:
+            # Fix 3: stop draining if we've hit the per-player cap
+            if tool_call_count >= MAX_TOOL_CALLS_PER_PLAYER:
+                self._event(f"WARN: {player.character.name} hit {MAX_TOOL_CALLS_PER_PLAYER}-tool cap")
+                self.transcript.add_system_event(
+                    f"{player.character.name} hit per-player tool call cap "
+                    f"({MAX_TOOL_CALLS_PER_PLAYER}). Stopping drain loop."
+                )
+                # Still need to submit final results to close the API loop
+                player.submit_tool_results(tool_results_for_api)
+                break
+
             max_drain -= 1
             followup = player.submit_tool_results(tool_results_for_api)
             if not followup.tool_calls:
@@ -1084,28 +1212,57 @@ class Session:
                         raw_text = tc.arguments.get("text", "")
                         if not isinstance(raw_text, str):
                             raw_text = str(raw_text)
-                        say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
+                        candidate = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
+
+                        # Fix 4: Role confusion in drain loop
+                        dm_match = re.search(r'\bDM:', candidate)
+                        if dm_match:
+                            self._event(f"WARN: {player.character.name} role-confused (drain)")
+                            candidate = candidate[:dm_match.start()].strip()
+
+                        # Iter 3 Fix 4: Language detection in drain loop
+                        if candidate and _has_excessive_non_ascii(candidate):
+                            self._event(f"WARN: {player.character.name} non-English content (drain)")
+                            candidate = ""
+
+                        # Fix 2: Empty say in drain loop (checked BEFORE incrementing tool count)
+                        if not candidate:
+                            has_pass = True
+                            tool_results_for_api.append((tc.id, "Empty say — treated as pass."))
+                            continue
+
+                        say_text = candidate
                         raw_urg = tc.arguments.get("urgency", 3)
                         urgency = max(1, min(5, int(raw_urg) if isinstance(raw_urg, (int, float)) else 3))
+                    tool_call_count += 1
                     tool_results_for_api.append((tc.id, "Said."))
                 elif tc.name == "pass_turn":
+                    tool_call_count += 1
                     has_pass = True
                     tool_results_for_api.append((tc.id, "You passed your turn."))
                 elif tc.name == "review_note":
+                    tool_call_count += 1
                     note = tc.arguments.get("text", "")
                     if note:
                         player.add_engagement_note(note)
                     tool_results_for_api.append((tc.id, "Noted."))
                 elif tc.name == "attack":
+                    tool_call_count += 1
                     result = self._resolve_player_attack(player, tc.arguments)
                     mechanical_results.append(result)
                     tool_results_for_api.append((tc.id, result))
                 elif tc.name == "heal":
+                    tool_call_count += 1
                     result = self._resolve_player_heal(player, tc.arguments)
                     mechanical_results.append(result)
                     tool_results_for_api.append((tc.id, result))
                 else:
+                    tool_call_count += 1
                     tool_results_for_api.append((tc.id, f"Unknown tool: {tc.name}"))
+
+        # If we got a real say_text, return it even if empty says also set has_pass
+        if say_text:
+            return say_text, urgency, mechanical_results
 
         if has_pass:
             return "pass", 0, mechanical_results
@@ -1152,6 +1309,16 @@ class Session:
         if not target_char:
             available = ", ".join(c.name for c in self.party)
             return f"Character '{target_name}' not found. Available: {available}"
+
+        # Fix 5: Guard against healing at full HP — don't waste spell slot
+        if target_char.current_hp >= target_char.max_hp:
+            result = (
+                f"{target_name} is already at full HP "
+                f"({target_char.current_hp}/{target_char.max_hp}). "
+                f"Heal not needed — spell slot preserved."
+            )
+            self.transcript.add_system_event(result)
+            return result
 
         # Check and deduct spell slot
         if not char.spell_slots:
@@ -1223,6 +1390,7 @@ class Session:
             "query": query,
             "turn": self.total_turns,
         })
+        self._turns_without_module_ref = 0
         self._tick("DM", f"search:{query[:20]}")
         self.transcript.add_system_event(f"DM searches module: \"{query}\"")
 
@@ -1264,6 +1432,7 @@ class Session:
             "page": page_number,
             "turn": self.total_turns,
         })
+        self._turns_without_module_ref = 0
         self._tick("DM", f"p{page_number}")
         self.transcript.add_system_event(f"DM reads page {page_number}")
         return f"--- Page {page_number} ---\n{self.pages[page_number - 1]}"

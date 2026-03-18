@@ -89,7 +89,8 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 
     # Generate pre-game module summary
     console.print("Generating module summary...")
-    summary = generate_module_summary(markdown, settings)
+    pdf_filename = Path(pdf_path).name
+    summary = generate_module_summary(markdown, settings, pdf_filename=pdf_filename)
     console.print(f"  {len(summary):,} chars")
 
     # Run sessions
@@ -272,7 +273,8 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
 
     # Generate pre-game module summary
     console.print("Generating module summary...")
-    summary = generate_module_summary(markdown, settings)
+    pdf_filename = Path(pdf_path).name
+    summary = generate_module_summary(markdown, settings, pdf_filename=pdf_filename)
     console.print(f"  {len(summary):,} chars")
 
     # Create output dir for transcript

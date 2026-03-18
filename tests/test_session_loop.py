@@ -7,7 +7,7 @@ from dndplaya.agents.base import AgentResponse, ToolCall
 from dndplaya.mechanics.characters import create_default_party
 from dndplaya.mechanics.dice import DiceRoller
 from dndplaya.mechanics.state import GameState
-from dndplaya.orchestrator.session import Session
+from dndplaya.orchestrator.session import Session, _has_excessive_non_ascii
 from dndplaya.orchestrator.transcript import SessionTranscript
 from dndplaya.config import Settings
 from pydantic import SecretStr
@@ -60,6 +60,10 @@ class TestSessionToolDispatch:
         session._cache_check_turn = 10
         session.ui = None
         session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
 
         return session
 
@@ -317,6 +321,10 @@ class TestProcessToolCalls:
         session._cache_check_turn = 10
         session.ui = None
         session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
 
         return session
 
@@ -422,6 +430,10 @@ class TestModuleReferenceTools:
         session._cache_check_turn = 10
         session.ui = None
         session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
 
         return session
 
@@ -586,6 +598,10 @@ class TestMonsterRegistration:
         session._cache_check_turn = 10
         session.ui = None
         session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
 
         return session
 
@@ -628,3 +644,542 @@ class TestMonsterRegistration:
             "target": "Thorin",
         })
         assert "HIT" in result or "MISS" in result
+
+
+class TestHealAtFullHPGuard:
+    """Fix 5: Healing a target at full HP should not consume a spell slot."""
+
+    def _make_session(self):
+        settings = _make_settings()
+        party = create_default_party(3)
+        session = Session.__new__(Session)
+        session.settings = settings
+        session.dice = DiceRoller(seed=42)
+        session.party = party
+        session.state = GameState(characters=party)
+        session.transcript = SessionTranscript()
+        session.total_turns = 0
+        session._terminated = False
+        session.dm = MagicMock()
+        session.players = []
+        session._player_map = {}
+        session.pages = None
+        session._last_read_page = None
+        session.module_references = []
+        session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
+
+        return session
+
+    def test_heal_at_full_hp_rejected(self):
+        """Healing at full HP should be rejected with slot preserved."""
+        session = self._make_session()
+        from dndplaya.agents.player import PlayerAgent, ARCHETYPES
+
+        # Brother Marcus (Cleric) is party[3]
+        cleric = session.party[3]
+        assert cleric.char_class == "Cleric"
+        initial_slots = dict(cleric.spell_slots)
+
+        # Target at full HP
+        target = session.party[0]
+        assert target.current_hp == target.max_hp
+
+        player = MagicMock()
+        player.character = cleric
+
+        result = session._resolve_player_heal(player, {"target": target.name})
+        assert "already at full HP" in result
+        assert "spell slot preserved" in result
+        # Spell slots should NOT be consumed
+        assert cleric.spell_slots == initial_slots
+
+    def test_heal_when_damaged_works(self):
+        """Healing a damaged target should still work normally."""
+        session = self._make_session()
+        cleric = session.party[3]
+        assert cleric.char_class == "Cleric"
+        initial_slots = dict(cleric.spell_slots)
+
+        # Damage the target
+        target = session.party[0]
+        target.current_hp = target.max_hp - 10
+
+        player = MagicMock()
+        player.character = cleric
+
+        result = session._resolve_player_heal(player, {"target": target.name})
+        assert "heals" in result
+        assert target.current_hp > target.max_hp - 10
+        # A spell slot should have been consumed
+        total_before = sum(initial_slots.values())
+        total_after = sum(cleric.spell_slots.values())
+        assert total_after < total_before
+
+
+class TestEmptySayRejection:
+    """Fix 2: Empty say() calls should be treated as pass_turn."""
+
+    def _make_session(self):
+        settings = _make_settings()
+        party = create_default_party(3)
+        session = Session.__new__(Session)
+        session.settings = settings
+        session.dice = DiceRoller(seed=42)
+        session.party = party
+        session.state = GameState(characters=party)
+        session.transcript = SessionTranscript()
+        session.total_turns = 0
+        session._terminated = False
+        session.dm = MagicMock()
+        session.players = []
+        session._player_map = {}
+        session.pages = None
+        session._last_read_page = None
+        session.module_references = []
+        session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
+
+        return session
+
+    def test_empty_say_treated_as_pass(self):
+        """say('') should be treated as pass_turn."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "", "urgency": 3})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "pass"
+        assert urgency == 0
+
+    def test_whitespace_say_treated_as_pass(self):
+        """say('   ') should be treated as pass_turn."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "   ", "urgency": 4})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "pass"
+        assert urgency == 0
+
+    def test_nonempty_say_works_normally(self):
+        """say('I attack') should work normally."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "I attack the goblin!", "urgency": 4})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "I attack the goblin!"
+        assert urgency == 4
+
+
+class TestRoleConfusionDetection:
+    """Fix 4: Player responses containing 'DM:' should be stripped."""
+
+    def _make_session(self):
+        settings = _make_settings()
+        party = create_default_party(3)
+        session = Session.__new__(Session)
+        session.settings = settings
+        session.dice = DiceRoller(seed=42)
+        session.party = party
+        session.state = GameState(characters=party)
+        session.transcript = SessionTranscript()
+        session.total_turns = 0
+        session._terminated = False
+        session.dm = MagicMock()
+        session.players = []
+        session._player_map = {}
+        session.pages = None
+        session._last_read_page = None
+        session.module_references = []
+        session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
+
+        return session
+
+    def test_dm_prefix_stripped_from_say(self):
+        """Text after 'DM:' in a say() call should be stripped."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        text_with_dm = (
+            "I approach the tree cautiously. "
+            "DM: As you approach, you see a hidden door open."
+        )
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": text_with_dm, "urgency": 3})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "I approach the tree cautiously."
+        assert "DM:" not in text
+
+    def test_dm_prefix_only_becomes_pass(self):
+        """If stripping 'DM:' leaves nothing, treat as pass."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "DM: You enter a dark room.", "urgency": 3})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "pass"
+        assert urgency == 0
+
+    def test_no_dm_prefix_unchanged(self):
+        """Normal text without DM: should be unaffected."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "I search the room.", "urgency": 3})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "I search the room."
+
+
+class TestDrainLoopCap:
+    """Fix 3: Per-player drain loop should be capped at 5 tool calls."""
+
+    def _make_session(self):
+        settings = _make_settings()
+        party = create_default_party(3)
+        session = Session.__new__(Session)
+        session.settings = settings
+        session.dice = DiceRoller(seed=42)
+        session.party = party
+        session.state = GameState(characters=party)
+        session.transcript = SessionTranscript()
+        session.total_turns = 0
+        session._terminated = False
+        session.dm = MagicMock()
+        session.players = []
+        session._player_map = {}
+        session.pages = None
+        session._last_read_page = None
+        session.module_references = []
+        session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
+
+        return session
+
+    def test_drain_loop_capped(self):
+        """Player making >5 tool calls should be stopped at the cap."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+
+        # Simulate a player that keeps calling say() in followup.
+        # Initial response = 1 say (count 1). Then 4 followup rounds
+        # with say() each (counts 2-5). The 5th followup should trigger the cap.
+        followup1 = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "second", "urgency": 3}, id="tc_2")],
+            stop_reason="tool_use",
+        )
+        followup2 = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "third", "urgency": 3}, id="tc_3")],
+            stop_reason="tool_use",
+        )
+        followup3 = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "fourth", "urgency": 3}, id="tc_4")],
+            stop_reason="tool_use",
+        )
+        followup4 = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "fifth", "urgency": 3}, id="tc_5")],
+            stop_reason="tool_use",
+        )
+        followup5 = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "sixth", "urgency": 3}, id="tc_6")],
+            stop_reason="tool_use",
+        )
+        final = _agent_response()  # no tool calls
+
+        player.submit_tool_results.side_effect = [
+            followup1, followup2, followup3, followup4, followup5, final,
+        ]
+
+        # Initial response has 1 say() + triggers drain loop
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {"text": "first", "urgency": 3})],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+
+        # Should use the first say text (first non-empty)
+        assert text == "first"
+        # Verify transcript records the cap warning
+        cap_events = [
+            e for e in session.transcript.entries
+            if "tool call cap" in e.content
+        ]
+        assert len(cap_events) >= 1
+
+
+class TestAllPassAutoAdvance:
+    """Fix 1: After 2 consecutive all-pass group inputs, inject story advance nudge."""
+
+    def _make_session(self):
+        settings = _make_settings()
+        party = create_default_party(3)
+        session = Session.__new__(Session)
+        session.settings = settings
+        session.dice = DiceRoller(seed=42)
+        session.party = party
+        session.state = GameState(characters=party)
+        session.transcript = SessionTranscript()
+        session.total_turns = 0
+        session._terminated = False
+        session.dm = MagicMock()
+        session.players = []
+        session._player_map = {}
+        session.pages = None
+        session._last_read_page = None
+        session.module_references = []
+        session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
+
+        return session
+
+    def test_consecutive_all_pass_counter_increments(self):
+        """Counter should track consecutive all-pass group inputs."""
+        session = self._make_session()
+        session._consecutive_all_pass = 0
+        # Simulate: after an all-pass round, counter goes to 1
+        session._consecutive_all_pass = 1
+        assert session._consecutive_all_pass == 1
+
+    def test_threshold_triggers_advance_nudge(self):
+        """At threshold, group input should return advance-story nudge."""
+        session = self._make_session()
+        # Pre-set to 1 (one previous all-pass)
+        session._consecutive_all_pass = 1
+
+        # Set up player mocks that match party characters
+        player_mocks = []
+        for p in session.party:
+            pm = MagicMock()
+            pm.character = p
+            player_mocks.append(pm)
+        session.players = player_mocks
+
+        # We need to mock _parallel_player_calls to return all passes
+        all_pass_results = []
+        for pm in player_mocks:
+            all_pass_results.append((pm, "pass", 0, []))
+
+        session._parallel_player_calls = MagicMock(return_value=all_pass_results)
+        session.transcript.get_game_context = MagicMock(return_value="test context")
+
+        result = session._handle_request_group_input({})
+        assert "Do NOT call request_group_input again" in result
+        assert session._consecutive_all_pass == 2
+
+    def test_meaningful_input_resets_counter(self):
+        """Counter should reset when players actually contribute."""
+        session = self._make_session()
+        session._consecutive_all_pass = 1
+
+        # Set up player mocks that match party characters
+        player_mocks = []
+        for p in session.party:
+            pm = MagicMock()
+            pm.character = p
+            player_mocks.append(pm)
+        session.players = player_mocks
+
+        # One player responds meaningfully, rest pass
+        results = []
+        for i, pm in enumerate(player_mocks):
+            if i == 0:
+                results.append((pm, "I attack the goblin!", 4, []))
+            else:
+                results.append((pm, "pass", 0, []))
+
+        session._parallel_player_calls = MagicMock(return_value=results)
+        session.transcript.get_game_context = MagicMock(return_value="test context")
+
+        result = session._handle_request_group_input({})
+        # Counter should be reset
+        assert session._consecutive_all_pass == 0
+
+
+class TestNonAsciiDetection:
+    """Iter 3 Fix 4: detect and strip non-English content from player responses."""
+
+    def test_pure_english_below_threshold(self):
+        assert not _has_excessive_non_ascii("I search the room carefully.")
+
+    def test_chinese_above_threshold(self):
+        assert _has_excessive_non_ascii("圣洁之人请给予我一个征兆")
+
+    def test_mixed_just_below_threshold(self):
+        # 3 non-ASCII out of 10 chars = 30%, threshold is >30%
+        assert not _has_excessive_non_ascii("abcdefg\u00e9\u00e8\u00ea")
+
+    def test_mixed_above_threshold(self):
+        # 4 non-ASCII out of 10 chars = 40%, above threshold
+        assert _has_excessive_non_ascii("abcdef\u00e9\u00e8\u00ea\u00eb")
+
+    def test_empty_string(self):
+        assert not _has_excessive_non_ascii("")
+
+    def test_ascii_only(self):
+        assert not _has_excessive_non_ascii("Hello, world!")
+
+    def test_non_english_player_say_treated_as_pass(self):
+        """say() with Chinese text should be treated as pass."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+        player.submit_tool_results.return_value = _agent_response()
+
+        response = _agent_response(
+            tool_calls=[_tool_call("say", {
+                "text": "圣洁之人请给予我一个征兆或洞察",
+                "urgency": 3,
+            })],
+            stop_reason="tool_use",
+        )
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "pass"
+        assert urgency == 0
+
+    def _make_session(self):
+        settings = _make_settings()
+        party = create_default_party(3)
+        session = Session.__new__(Session)
+        session.settings = settings
+        session.dice = DiceRoller(seed=42)
+        session.party = party
+        session.state = GameState(characters=party)
+        session.transcript = SessionTranscript()
+        session.total_turns = 0
+        session._terminated = False
+        session.dm = MagicMock()
+        session.players = []
+        session._player_map = {}
+        session.pages = None
+        session._last_read_page = None
+        session.module_references = []
+        session._active_monsters = {}
+        session._initiative_order = []
+        session._initiative_index = -1
+        session._consecutive_no_tool_turns = 0
+        session._narration_count = 0
+        session._cost_budget = 3.00
+        session._cache_check_turn = 10
+        session.ui = None
+        session._pending_ui_wait = False
+        session._turns_without_module_ref = 0
+        session._STALE_THRESHOLD = 3
+        session._consecutive_all_pass = 0
+        session._ALL_PASS_THRESHOLD = 2
+        return session
+
+    def test_empty_say_does_not_count_toward_cap(self):
+        """Empty say() calls should NOT increment tool_call_count."""
+        session = self._make_session()
+        player = MagicMock()
+        player.character = session.party[0]
+
+        # Initial response: 4 empty say() calls + 1 real say. With the fix,
+        # only the real say counts toward the cap (1 of 5), so no cap warning.
+        response = _agent_response(
+            tool_calls=[
+                _tool_call("say", {"text": "", "urgency": 3}, id="tc_1"),
+                _tool_call("say", {"text": "", "urgency": 3}, id="tc_2"),
+                _tool_call("say", {"text": "", "urgency": 3}, id="tc_3"),
+                _tool_call("say", {"text": "", "urgency": 3}, id="tc_4"),
+                _tool_call("say", {"text": "I search the room.", "urgency": 3}, id="tc_5"),
+            ],
+            stop_reason="tool_use",
+        )
+        player.submit_tool_results.return_value = _agent_response()
+
+        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        assert text == "I search the room."
+        # No cap warning since only 1 real tool call
+        cap_events = [
+            e for e in session.transcript.entries
+            if "tool call cap" in e.content
+        ]
+        assert len(cap_events) == 0

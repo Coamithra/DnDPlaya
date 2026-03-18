@@ -110,6 +110,8 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **Players have no persistent history**: Each player call rebuilds from the cached chat via `set_cached_context()`. Only winning responses are appended to the chat. This keeps the prefix stable for cache hits and avoids polluting the model's context with discarded attempts.
 - **High compaction threshold**: Context compaction at 150k tokens (emergency-only with Haiku's 200k window, DM only). Players don't use compaction — they use the cached chat approach instead.
 - **Early outs**: Session aborts on: DM stuck (5 consecutive no-tool turns), no narration (15 turns), cost budget exceeded ($3), with cache health warning (0 reads after 10 turns).
+- **Ollama defensive guardrails**: Local models (especially qwen2.5:14b) struggle with tool use, urgency, and staying on-topic. Mechanical guardrails in the orchestrator: (1) per-player drain loop cap (5 tool calls max) prevents runaway hallucination loops, (2) empty say() rejection treats blank/whitespace say calls as pass_turn without consuming a tool call slot, (3) role confusion detection strips "DM:" content from player responses, (4) non-ASCII language detection strips responses with >30% non-ASCII chars (catches Chinese/Russian/Thai language switching), (5) all-pass auto-advance nudges the DM to advance the story after 2 consecutive all-pass group inputs instead of re-asking, (6) stale narration detection nudges the DM to use module reference tools after 3 turns without any search_module/read_page calls, (7) heal-at-full-HP guard preserves spell slots instead of healing for 0 HP, (8) summarizer post-validation checks if summary keywords match the PDF filename and prepends a warning if not.
+- **Summarizer anti-hallucination**: The summarizer prompt includes strong anti-fabrication instructions and accepts an optional `pdf_filename` parameter. After generation, `_validate_summary()` checks extracted filename keywords against the summary text. If no keywords match, a warning is prepended. The CLI passes `pdf_filename=Path(pdf_path).name` to the summarizer.
 - **DM-driven architecture**: DM receives a pre-game summary + map images, references specific pages during play via tools. No BFS room traversal or programmatic combat resolution. DM instructed never to narrate PC actions — only describe world, NPCs, monsters, and outcomes.
 - **Page-based module reference**: Instead of stuffing the full module into the system prompt, the DM gets a summary and uses `search_module`/`read_page`/`next_page`/`previous_page` to look up details. Module reference frequency is tracked as a metric.
 - **Tool use**: BaseAgent supports `send_with_tools()` and `submit_tool_results()` for the Anthropic tool use API. `Message.content` is `str | list` to handle tool use blocks.
@@ -127,7 +129,7 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 ## Testing
 
 ```bash
-python -m pytest tests/ -v                           # All 254 tests
+python -m pytest tests/ -v                           # All 301 tests
 python -m pytest tests/test_characters.py -v         # Character creation + skills
 python -m pytest tests/test_combat.py -v             # Combat only
 python -m pytest tests/test_pdf_chunker.py -v        # PDF parsing only
@@ -143,7 +145,7 @@ python -m pytest tests/test_config.py -v             # Settings/config
 python -m pytest tests/test_provider_ollama.py -v    # Ollama provider: message/tool translation, validation
 ```
 
-Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer, data models, agent base + tool use + prompt caching (mocked provider), Ollama provider message/tool format translation + tool validation + config, session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, and edge cases. No API key needed for tests.
+Tests cover: dice determinism + expression parsing, character/monster creation, skill computation (all classes × levels 1/5/11), initiative bonuses, combat resolution, pressure signals, game state lifecycle, skill checks, PDF chunking, page-aware extraction, module summarizer (incl. anti-hallucination validation + keyword extraction), data models, agent base + tool use + prompt caching (mocked provider), Ollama provider message/tool format translation + tool validation + config, session tool dispatch (skill checks/attacks/change_hp/roll_initiative/group input/module search+read/navigation/change_music/TPK), DM + player tool schema validation (including dynamic music tool builder), urgency parsing/stripping, monster registration, history compaction (text + tool-use formats, 150k threshold), config/settings, Ollama guardrails (empty say rejection, role confusion detection, non-ASCII detection, drain loop cap, all-pass auto-advance, heal-at-full-HP guard), and edge cases. No API key needed for tests.
 
 ## TODO (from playtesting sessions)
 

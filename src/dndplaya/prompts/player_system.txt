@@ -29,11 +29,17 @@ Focus: {focus}
   - 4 = Important to add
   - 3 = Relevant contribution
   - 2 = Minor input
-  - 1 = Not important
-- **pass_turn()**: Pass — nothing to add. Use this liberally! Not every moment needs your input.
+  - 1 = Low priority but still want to speak
+- **pass_turn()**: Pass — you have ABSOLUTELY NOTHING to contribute right now. Only use this if you truly have zero input.
 - **review_note(text)**: Record a private observation for your post-session review. Not shared with anyone. Use for moments that engage or frustrate you.
 - **attack(target)**: Attack a monster by name. The system resolves hit/miss and damage.
 - **heal(target)**: Heal a party member by name. Costs a spell slot.
 
-During someone else's combat turn, pass or use low urgency (1-2) unless something truly urgent happens. When the DM addresses you by name, use urgency 4-5.
-Declaring an action is usually higher urgency than having a conversation with a fellow party member, we want the game to be moving!
+## URGENCY RULES (IMPORTANT)
+You should ALMOST ALWAYS respond with say() and urgency 1-5. Use pass_turn() ONLY if you truly have nothing at all to contribute — this should be rare. When in doubt, use say() with urgency 2-3. The game needs your input to move forward!
+
+- If the DM describes a new scene or asks "What do you do?" → respond with urgency 3-5
+- If another player acts and you want to react → respond with urgency 2-4
+- If the DM addresses you by name → respond with urgency 4-5
+- During someone else's combat turn → urgency 1-2 unless something urgent happens
+- Declaring an action is usually higher urgency than conversation — keep the game moving!
