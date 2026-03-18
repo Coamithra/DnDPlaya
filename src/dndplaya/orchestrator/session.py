@@ -1153,8 +1153,8 @@ class Session:
                 )
 
         # --- Role confusion: strip "DM:" content from say() args → fixed ---
+        fixed_any = False
         if g.detect_role_confusion and response.tool_calls:
-            fixed_any = False
             for tc in response.tool_calls:
                 if tc.name == "say":
                     text = str(tc.arguments.get("text", ""))
@@ -1168,7 +1168,22 @@ class Session:
                     f"Role confusion detected: {name} "
                     "hallucinated DM response — stripped."
                 )
-                return ValidationResult(status="fixed", response=response)
+
+        # --- Empty say: convert say(text="") to pass_turn → fixed ---
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                if tc.name == "say":
+                    raw = tc.arguments.get("text", "")
+                    if not isinstance(raw, str):
+                        raw = str(raw)
+                    cleaned = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw).strip()
+                    if not cleaned:
+                        tc.name = "pass_turn"
+                        tc.arguments = {}
+                        fixed_any = True
+
+        if fixed_any:
+            return ValidationResult(status="fixed", response=response)
 
         return ValidationResult(status="ok")
 
@@ -1200,12 +1215,6 @@ class Session:
                 if not isinstance(raw_text, str):
                     raw_text = str(raw_text)
                 say_text = re.sub(r'\s*\[URGENCY:\s*\d+\]', '', raw_text).strip()
-
-                # Empty say() treated as pass (checked BEFORE incrementing tool count)
-                if not say_text:
-                    has_pass = True
-                    tool_results_for_api.append((tc.id, "Empty say — treated as pass."))
-                    continue
 
                 tool_call_count += 1
                 raw_urg = tc.arguments.get("urgency", 3)

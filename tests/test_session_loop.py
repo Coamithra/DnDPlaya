@@ -772,7 +772,7 @@ class TestEmptySayRejection:
         return session
 
     def test_empty_say_treated_as_pass(self):
-        """say('') should be treated as pass_turn."""
+        """say('') should be converted to pass_turn by validation."""
         session = self._make_session()
         player = MagicMock()
         player.character = session.party[0]
@@ -782,12 +782,14 @@ class TestEmptySayRejection:
             tool_calls=[_tool_call("say", {"text": "", "urgency": 3})],
             stop_reason="tool_use",
         )
-        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        result = session._validate_player_response(player, response)
+        assert result.status == "fixed"
+        text, urgency, mechanical = session._resolve_player_tools(player, result.response)
         assert text == "pass"
         assert urgency == 0
 
     def test_whitespace_say_treated_as_pass(self):
-        """say('   ') should be treated as pass_turn."""
+        """say('   ') should be converted to pass_turn by validation."""
         session = self._make_session()
         player = MagicMock()
         player.character = session.party[0]
@@ -797,12 +799,14 @@ class TestEmptySayRejection:
             tool_calls=[_tool_call("say", {"text": "   ", "urgency": 4})],
             stop_reason="tool_use",
         )
-        text, urgency, mechanical = session._resolve_player_tools(player, response)
+        result = session._validate_player_response(player, response)
+        assert result.status == "fixed"
+        text, urgency, mechanical = session._resolve_player_tools(player, result.response)
         assert text == "pass"
         assert urgency == 0
 
     def test_nonempty_say_works_normally(self):
-        """say('I attack') should work normally."""
+        """say('I attack') should pass validation as ok."""
         session = self._make_session()
         player = MagicMock()
         player.character = session.party[0]
@@ -812,6 +816,8 @@ class TestEmptySayRejection:
             tool_calls=[_tool_call("say", {"text": "I attack the goblin!", "urgency": 4})],
             stop_reason="tool_use",
         )
+        result = session._validate_player_response(player, response)
+        assert result.status == "ok"
         text, urgency, mechanical = session._resolve_player_tools(player, response)
         assert text == "I attack the goblin!"
         assert urgency == 4
