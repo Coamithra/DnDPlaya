@@ -1642,9 +1642,9 @@ class Session:
             score = sum(page_lower.count(term) for term in terms)
             if score > 0:
                 scored.append((score, i + 1, page_text))
-        scored.sort(reverse=True)  # highest score first for selection
+        scored.sort(key=lambda x: (-x[0], x[1]))  # highest score first, tiebreak by page num
         top = scored[:5]
-        top.reverse()  # chain lowest-score first so best page is summarized last
+        top.reverse()  # chain lowest-score first; equal scores → earlier pages first
         matching_pages = [(page_num, text) for _, page_num, text in top]
         page_scores = {page_num: score for score, page_num, _ in top}
 
