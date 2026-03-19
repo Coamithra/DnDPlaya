@@ -1642,8 +1642,10 @@ class Session:
             score = sum(page_lower.count(term) for term in terms)
             if score > 0:
                 scored.append((score, i + 1, page_text))
-        scored.sort(reverse=True)  # highest score first
-        matching_pages = [(page_num, text) for _, page_num, text in scored[:5]]
+        scored.sort(reverse=True)  # highest score first for selection
+        top = scored[:5]
+        top.reverse()  # chain lowest-score first so best page is summarized last
+        matching_pages = [(page_num, text) for _, page_num, text in top]
 
         if not matching_pages:
             self.transcript.add_system_event("No matches found.")
