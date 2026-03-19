@@ -49,7 +49,7 @@ class SessionTranscript:
         elif content.startswith("DM internal:"):
             line = f"\n*{content}*\n\n"
         elif "\n" in content:
-            # Multi-line system events (e.g. RAG research) — use blockquote
+            # Multi-line system events (e.g. module research) — use blockquote
             # Add > on blank lines too so adjacent blocks don't merge
             quoted = "\n".join(
                 f"> {l}" if l.strip() else ">" for l in content.split("\n")

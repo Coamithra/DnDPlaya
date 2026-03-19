@@ -229,14 +229,14 @@ class Session:
 
         Instead of summarizing the entire module in one shot (which can
         overflow small context windows), we run a few focused queries
-        through the RAG pipeline and compile the results into a brief
+        through the search+summarize pipeline and compile the results into a brief
         prep sheet that goes into the DM's opening prompt.
         """
         if not self.pages:
             return ""
 
         print("\n  Bootstrapping module knowledge...", end="", flush=True)
-        self.transcript.add_system_event("Bootstrapping module knowledge via RAG queries...")
+        self.transcript.add_system_event("Bootstrapping module knowledge...")
 
         sections: list[str] = []
         for search_terms, question in self._BOOTSTRAP_QUERIES:
@@ -263,7 +263,7 @@ class Session:
         print(f"Session start | Party: {', '.join(c.name for c in self.party)}", flush=True)
 
         try:
-            # Bootstrap module knowledge via RAG queries (replaces upfront summary)
+            # Bootstrap module knowledge via search queries (replaces upfront summary)
             prep_sheet = self._bootstrap_module_knowledge()
 
             # Build opening prompt

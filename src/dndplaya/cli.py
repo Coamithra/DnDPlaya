@@ -18,7 +18,7 @@ from .mechanics.characters import create_default_party
 from .orchestrator.session import Session
 from .feedback.reviews import generate_all_reviews
 # generate_module_summary and create_provider kept for future use
-# when the upfront summarizer is re-enabled alongside bootstrap RAG
+# when the upfront summarizer is re-enabled alongside bootstrap queries
 from .agents.provider import create_provider  # noqa: F401
 
 console = Console()
@@ -90,7 +90,7 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
     console.print(f"  {len(markdown):,} chars, {len(pages)} pages, {len(images)} images")
 
     # Module summary: skip the upfront LLM summarizer call.
-    # The session bootstraps module knowledge via targeted RAG queries
+    # The session bootstraps module knowledge via targeted search queries
     # at startup, which works better with small context windows.
     summary = ""
 
@@ -285,7 +285,7 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
     pages = extract_pages(pdf_path)
     console.print(f"  {len(markdown):,} chars, {len(pages)} pages, {len(images)} images")
 
-    # Module summary: skip upfront LLM call, bootstrap via RAG at session start.
+    # Module summary: skip upfront LLM call, bootstrap via search at session start.
     summary = ""
 
     # Auto-detect room connections file
