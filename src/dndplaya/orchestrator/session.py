@@ -1650,20 +1650,21 @@ class Session:
                 snippets.append(f"Page {page_num}: {snippet}")
             return "Search results:\n" + "\n\n".join(snippets)
 
-        # 3. Build deduplicated page windows (±1 neighbors) and chain summaries.
-        #    Each summary builds on the previous one ("anything to add?"),
-        #    so the final summary IS the combined answer — no synthesis needed.
+        # 3. Build page windows (±1 neighbors) and chain summaries.
+        #    Skip a hit only if its window adds zero new pages.
+        #    E.g. hits on pages 2,3,13: page 2 reads {1,2,3}, page 3's
+        #    window {2,3,4} adds page 4 so it's NOT skipped.
         num_pages = len(self.pages)
         running_summary = ""
-        pages_already_windowed: set[int] = set()
+        pages_read: set[int] = set()
         summarized_pages: list[int] = []
         for page_num, _page_text in matching_pages:
-            if page_num in pages_already_windowed:
-                continue  # already covered by a neighbor's window
             win_lo = max(1, page_num - 1)
             win_hi = min(num_pages, page_num + 1)
-            for p in range(win_lo, win_hi + 1):
-                pages_already_windowed.add(p)
+            window_pages = set(range(win_lo, win_hi + 1))
+            if window_pages.issubset(pages_read):
+                continue  # this window adds nothing new
+            pages_read.update(window_pages)
             self._tick("DM", f"sum:p{page_num}")
             window = self._get_page_window(page_num)
             running_summary = self._summarize_page_window(
