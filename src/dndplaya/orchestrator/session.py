@@ -1632,16 +1632,18 @@ class Session:
         self.transcript.add_system_event(header)
 
         # 1. Find matching pages — split on spaces/commas/pipes, match ANY term
-        matching_pages: list[tuple[int, str]] = []  # (page_num, page_text)
+        #    Score each page by total term occurrences, take top 5 by score.
         terms = [t.strip().lower() for t in re.split(r'[,|\s]+', search_terms) if len(t.strip()) >= 2]
         if not terms:
             terms = [search_terms.lower()]
+        scored: list[tuple[int, int, str]] = []  # (score, page_num, page_text)
         for i, page_text in enumerate(self.pages):
             page_lower = page_text.lower()
-            if any(term in page_lower for term in terms):
-                matching_pages.append((i + 1, page_text))
-                if len(matching_pages) >= 5:
-                    break
+            score = sum(page_lower.count(term) for term in terms)
+            if score > 0:
+                scored.append((score, i + 1, page_text))
+        scored.sort(reverse=True)  # highest score first
+        matching_pages = [(page_num, text) for _, page_num, text in scored[:5]]
 
         if not matching_pages:
             self.transcript.add_system_event("No matches found.")
