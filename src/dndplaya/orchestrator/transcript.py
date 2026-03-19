@@ -50,8 +50,11 @@ class SessionTranscript:
             line = f"\n*{content}*\n\n"
         elif "\n" in content:
             # Multi-line system events (e.g. RAG research) — use blockquote
-            quoted = "\n".join(f"> {l}" for l in content.split("\n"))
-            line = f"\n{quoted}\n\n"
+            # Add > on blank lines too so adjacent blocks don't merge
+            quoted = "\n".join(
+                f"> {l}" if l.strip() else ">" for l in content.split("\n")
+            )
+            line = f"\n{quoted}\n\n---\n\n"
         else:
             line = f"\n`{content}`\n\n"
         with open(self._log_path, "a", encoding="utf-8") as f:
