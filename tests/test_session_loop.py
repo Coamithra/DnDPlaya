@@ -113,7 +113,7 @@ class TestSessionToolDispatch:
 
     def test_handle_ask_skill_check_all_difficulties(self):
         session = self._make_session()
-        dcs = {"very_easy": 5, "easy": 10, "medium": 13, "hard": 16, "very_hard": 20, "nearly_impossible": 25}
+        dcs = {"very_easy": 5, "easy": 10, "medium": 15, "hard": 20, "very_hard": 25, "nearly_impossible": 30}
         for diff, expected_dc in dcs.items():
             session.dice = DiceRoller(seed=42)
             result = session._handle_ask_skill_check({

@@ -23,10 +23,10 @@ DEFAULT_MAX_TURNS = 100
 DIFFICULTY_DC = {
     "very_easy": 5,
     "easy": 10,
-    "medium": 13,
-    "hard": 16,
-    "very_hard": 20,
-    "nearly_impossible": 25,
+    "medium": 15,
+    "hard": 20,
+    "very_hard": 25,
+    "nearly_impossible": 30,
 }
 
 
@@ -1608,14 +1608,20 @@ class Session:
                     break
 
         if not matching_pages:
+            self.transcript.add_system_event("  No matches found.")
             return f'No matches found for "{search_terms}".'
+
+        # Log which pages matched
+        page_nums = [p for p, _ in matching_pages]
+        self.transcript.add_system_event(
+            f"  Found matches on pages {', '.join(str(p) for p in page_nums)}"
+        )
 
         # 2. If no question, return snippets (backward compatible)
         if not question:
             snippets = []
             for page_num, page_text in matching_pages:
                 page_lower = page_text.lower()
-                # Find the first matching term for the snippet
                 pos = -1
                 for term in terms:
                     pos = page_lower.find(term)
@@ -1636,20 +1642,25 @@ class Session:
         # 3. Build deduplicated page windows (±1 neighbors) and summarize
         #    If pages 3 and 4 both match, their windows overlap — we merge
         #    them into one call instead of reading pages twice.
+        num_pages = len(self.pages)
         fragments: list[tuple[int, str]] = []
         pages_already_windowed: set[int] = set()
         for page_num, _page_text in matching_pages:
             if page_num in pages_already_windowed:
                 continue  # already covered by a neighbor's window
-            # Mark this page and its neighbors as covered
-            for p in (page_num - 1, page_num, page_num + 1):
-                if 1 <= p <= len(self.pages):
-                    pages_already_windowed.add(p)
+            # Compute the actual window range
+            win_lo = max(1, page_num - 1)
+            win_hi = min(num_pages, page_num + 1)
+            # Mark pages in window as covered
+            for p in range(win_lo, win_hi + 1):
+                pages_already_windowed.add(p)
             self._tick("DM", f"sum:p{page_num}")
             window = self._get_page_window(page_num)
             summary = self._summarize_page_window(window, question)
             fragments.append((page_num, summary))
-            self.transcript.add_system_event(f"  Page {page_num}: {summary}")
+            self.transcript.add_system_event(
+                f"  Page {page_num} ({win_lo}-{win_hi}): {summary}"
+            )
 
         # 4. If multiple pages, synthesize into one answer
         if len(fragments) == 1:
@@ -1687,13 +1698,19 @@ class Session:
 
         # If question provided, summarize with ±1 page window
         if question:
+            num_pages = len(self.pages)
+            win_lo = max(1, page_number - 1)
+            win_hi = min(num_pages, page_number + 1)
             self.transcript.add_system_event(
-                f'DM reads page {page_number} (question: "{question}")'
+                f'DM reads page {page_number} ({win_lo}-{win_hi})\n'
+                f'  Question: "{question}"'
             )
             self._tick("DM", f"sum:p{page_number}")
             window = self._get_page_window(page_number)
             summary = self._summarize_page_window(window, question)
-            self.transcript.add_system_event(f"  Page {page_number} summary: {summary}")
+            self.transcript.add_system_event(
+                f"  Page {page_number} ({win_lo}-{win_hi}): {summary}"
+            )
             return f"--- Page {page_number} (summary) ---\n{summary}"
 
         self.transcript.add_system_event(f"DM reads page {page_number}")
