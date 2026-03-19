@@ -1536,21 +1536,14 @@ class Session:
         """
         from ..agents.base import BaseAgent
 
-        system = (
-            "You are reading pages from a D&D module. Be concise "
-            "(200 words max). Include specific numbers (HP, AC, CR, "
-            "DC, damage, quantities). Only include information from "
-            "the provided pages."
-        )
-        if self._room_map:
-            system += (
-                "\n\nFor spatial context, here is the dungeon room map:\n"
-                f"{self._room_map}"
-            )
-
         agent = BaseAgent(
             name="PageSummarizer",
-            system_prompt=system,
+            system_prompt=(
+                "You are reading pages from a D&D module. Be concise "
+                "(200 words max). Include specific numbers (HP, AC, CR, "
+                "DC, damage, quantities). Only include information from "
+                "the provided pages."
+            ),
             settings=self.settings,
         )
         if prior_summary:
@@ -1569,7 +1562,7 @@ class Session:
             )
         try:
             result = agent.send(prompt)
-            self._log_side_call("PageSummarizer", system, prompt, result)
+            self._log_side_call("PageSummarizer", agent.system_prompt, prompt, result)
             return result
         except Exception as e:
             return f"(summarization error: {e})"
