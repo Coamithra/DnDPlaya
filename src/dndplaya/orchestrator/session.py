@@ -1671,15 +1671,15 @@ class Session:
                 window, question, prior_summary=running_summary,
             )
             summarized_pages.append(page_num)
+            # Log each intermediate summary for debugging
+            self.transcript.add_system_event(f"After page {page_num} ({win_lo}-{win_hi}):")
+            self.transcript.add_system_event(running_summary)
 
-        # Transcript: show which pages were read, then the final summary
-        pages_label = ", ".join(
-            str(p) for p in summarized_pages
-        )
-        self.transcript.add_system_event(
-            f"Summarized pages {pages_label}:"
-        )
-        self.transcript.add_system_event(running_summary)
+        # Final label
+        if len(summarized_pages) > 1:
+            pages_label = ", ".join(str(p) for p in summarized_pages)
+            self.transcript.add_system_event(f"Final summary (pages {pages_label}):")
+            self.transcript.add_system_event(running_summary)
         return running_summary
 
     def _handle_read_page(self, args: dict) -> str:
