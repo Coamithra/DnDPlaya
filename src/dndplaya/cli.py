@@ -94,18 +94,16 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
     # at startup, which works better with small context windows.
     summary = ""
 
-    # Auto-detect room connections file — search for *_room_connections.txt
-    # in the PDF's directory and cwd, matching any file that contains
-    # "room_connections" in the name.
+    # Auto-detect room map: <pdf_stem>.map.txt next to the PDF or in cwd
+    pdf_stem = Path(pdf_path).stem
     room_map = ""
-    search_dirs = {Path(pdf_path).parent.resolve(), Path.cwd().resolve()}
-    for d in search_dirs:
-        for candidate in d.glob("*room_connections*"):
-            if candidate.is_file():
-                room_map = candidate.read_text(encoding="utf-8")
-                console.print(f"  Room map: {candidate}")
-                break
-        if room_map:
+    for candidate in [
+        Path(pdf_path).parent / f"{pdf_stem}.map.txt",
+        Path(f"{pdf_stem}.map.txt"),
+    ]:
+        if candidate.exists():
+            room_map = candidate.read_text(encoding="utf-8")
+            console.print(f"  Room map: {candidate}")
             break
 
     # Run sessions
@@ -290,16 +288,16 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
     # Module summary: skip upfront LLM call, bootstrap via search at session start.
     summary = ""
 
-    # Auto-detect room connections file
+    # Auto-detect room map: <pdf_stem>.map.txt next to the PDF or in cwd
+    pdf_stem = Path(pdf_path).stem
     room_map = ""
-    search_dirs = {Path(pdf_path).parent.resolve(), Path.cwd().resolve()}
-    for d in search_dirs:
-        for candidate in d.glob("*room_connections*"):
-            if candidate.is_file():
-                room_map = candidate.read_text(encoding="utf-8")
-                console.print(f"  Room map: {candidate}")
-                break
-        if room_map:
+    for candidate in [
+        Path(pdf_path).parent / f"{pdf_stem}.map.txt",
+        Path(f"{pdf_stem}.map.txt"),
+    ]:
+        if candidate.exists():
+            room_map = candidate.read_text(encoding="utf-8")
+            console.print(f"  Room map: {candidate}")
             break
 
     # Create output dir for transcript
