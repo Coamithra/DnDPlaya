@@ -213,25 +213,26 @@ class Session:
         """Print a notable event on its own line."""
         print(f"\n  >> {text}", end="", flush=True)
 
-    # Bootstrap queries to seed the DM's knowledge before the session.
-    # Each tuple is (search_terms, question).
-    # Bootstrap queries use generic D&D module terms that appear in most adventures.
-    # Each tuple is (search_terms, question). Terms are OR-matched against pages.
-    # Terms should be specific enough to target intro/overview sections, not every page.
-    _BOOTSTRAP_QUERIES = [
-        ("introduction overview synopsis", "What is this dungeon module about? Title, setting, level range, and adventure overview."),
-        ("villain boss leader named", "Who are the main NPCs or villains, their names, roles, and motivations?"),
-        ("hook background quest reward", "What are the reasons or hooks for adventurers to visit this dungeon?"),
-        ("entrance arrival start approaching", "Where is the dungeon entrance and what does the party encounter first?"),
-    ]
+    # Bootstrap search terms — generic D&D module words that appear in most
+    # adventures.  OR-matched against pages, so broad coverage is fine.
+    _BOOTSTRAP_SEARCH = (
+        "introduction overview background adventure hook quest entrance "
+        "room area monster creature trap treasure villain leader"
+    )
+    _BOOTSTRAP_QUESTION = (
+        "Summarize this dungeon module as a DM prep sheet. Include: "
+        "title, setting, level range, adventure overview, key NPCs and "
+        "villains (with stats if available), adventure hooks, the entrance "
+        "location, and any important warnings for the DM."
+    )
 
     def _bootstrap_module_knowledge(self) -> str:
-        """Run targeted search_module queries to build a prep sheet.
+        """Run one broad search+summarize to build a prep sheet.
 
-        Instead of summarizing the entire module in one shot (which can
-        overflow small context windows), we run a few focused queries
-        through the search+summarize pipeline and compile the results into a brief
-        prep sheet that goes into the DM's opening prompt.
+        Uses wide search terms to hit most pages, then chains summaries
+        page by page. Each summary builds on the last, so the final
+        result is a comprehensive prep sheet without needing multiple
+        queries or a synthesis step.
         """
         if not self.pages:
             return ""
@@ -239,24 +240,17 @@ class Session:
         print("\n  Bootstrapping module knowledge...", end="", flush=True)
         self.transcript.add_system_event("Bootstrapping module knowledge...")
 
-        sections: list[str] = []
-        for search_terms, question in self._BOOTSTRAP_QUERIES:
-            result = self._handle_search_module({
-                "search_terms": search_terms,
-                "question": question,
-            })
-            if result and "No matches found" not in result:
-                sections.append(result)
+        result = self._handle_search_module({
+            "search_terms": self._BOOTSTRAP_SEARCH,
+            "question": self._BOOTSTRAP_QUESTION,
+        })
 
-        if not sections:
+        if not result or "No matches found" in result:
             return ""
 
-        prep_sheet = "## Module Prep Sheet\n\n" + "\n\n".join(sections)
-        print(f" done ({len(sections)} sections)", flush=True)
-        self.transcript.add_system_event(
-            f"MODULE PREP SHEET (from {len(sections)} bootstrap queries):\n\n"
-            + prep_sheet
-        )
+        prep_sheet = f"## Module Prep Sheet\n\n{result}"
+        print(" done", flush=True)
+        self.transcript.add_system_event(f"MODULE PREP SHEET:\n\n{prep_sheet}")
         return prep_sheet
 
     def run(self) -> SessionResult:
@@ -1624,8 +1618,6 @@ class Session:
             page_lower = page_text.lower()
             if any(term in page_lower for term in terms):
                 matching_pages.append((i + 1, page_text))
-                if len(matching_pages) >= 5:
-                    break
 
         if not matching_pages:
             self.transcript.add_system_event("No matches found.")
