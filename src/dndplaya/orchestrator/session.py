@@ -1633,10 +1633,7 @@ class Session:
             window = self._get_page_window(page_num)
             summary = self._summarize_page_window(window, question)
             fragments.append((page_num, summary))
-            self.transcript.add_system_event(
-                f"  Page {page_num}: {summary[:200]}"
-                + ("..." if len(summary) > 200 else "")
-            )
+            self.transcript.add_system_event(f"  Page {page_num}: {summary}")
 
         # 4. If multiple pages, synthesize into one answer
         if len(fragments) == 1:
@@ -1646,7 +1643,7 @@ class Session:
             self._tick("DM", "synthesize")
             answer = self._synthesize_fragments(fragments, question)
 
-        self.transcript.add_system_event(f"  Answer: {answer[:300]}")
+        self.transcript.add_system_event(f"  Answer: {answer}")
         return answer
 
     def _handle_read_page(self, args: dict) -> str:
@@ -1680,10 +1677,7 @@ class Session:
             self._tick("DM", f"sum:p{page_number}")
             window = self._get_page_window(page_number)
             summary = self._summarize_page_window(window, question)
-            self.transcript.add_system_event(
-                f"  Page {page_number} summary: {summary[:200]}"
-                + ("..." if len(summary) > 200 else "")
-            )
+            self.transcript.add_system_event(f"  Page {page_number} summary: {summary}")
             return f"--- Page {page_number} (summary) ---\n{summary}"
 
         self.transcript.add_system_event(f"DM reads page {page_number}")
