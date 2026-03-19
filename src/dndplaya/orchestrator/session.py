@@ -214,11 +214,14 @@ class Session:
 
     # Bootstrap queries to seed the DM's knowledge before the session.
     # Each tuple is (search_terms, question).
+    # Bootstrap queries use generic D&D module terms that appear in most adventures.
+    # Each tuple is (search_terms, question). Terms are OR-matched against pages.
+    # Terms should be specific enough to target intro/overview sections, not every page.
     _BOOTSTRAP_QUERIES = [
-        ("introduction overview background", "What is this dungeon module about? Title, setting, level range, and adventure overview."),
-        ("druid archdruid leader villain", "Who are the main NPCs, their names, roles, and motivations?"),
-        ("hook adventure background quest", "What are the reasons or hooks for adventurers to visit this dungeon?"),
-        ("entrance start arrive", "Where is the dungeon entrance and what does the party encounter first?"),
+        ("introduction overview synopsis", "What is this dungeon module about? Title, setting, level range, and adventure overview."),
+        ("villain boss leader named", "Who are the main NPCs or villains, their names, roles, and motivations?"),
+        ("hook background quest reward", "What are the reasons or hooks for adventurers to visit this dungeon?"),
+        ("entrance arrival start approaching", "Where is the dungeon entrance and what does the party encounter first?"),
     ]
 
     def _bootstrap_module_knowledge(self) -> str:
