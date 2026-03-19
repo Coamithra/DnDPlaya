@@ -105,6 +105,9 @@ class ProviderGuardrails:
     context_window: int = 200_000
     """Model context window in tokens. Used to set compaction thresholds."""
 
+    supports_images: bool = True
+    """Whether the model supports image inputs (vision)."""
+
     @property
     def compaction_threshold(self) -> int:
         """Token count at which history compaction should trigger.
@@ -346,6 +349,7 @@ class OllamaProvider:
             detect_role_confusion=True,
             detect_non_ascii=True,
             context_window=32_000,  # conservative default for local models
+            supports_images=False,  # most local models are text-only
         )
 
     @property

@@ -6,6 +6,7 @@ from ..config import Settings
 from ..prompts import load_prompt
 from .base import BaseAgent
 from .dm_tools import DM_TOOLS, build_music_tool
+from .provider import create_provider
 
 
 class DMAgent(BaseAgent):
@@ -26,16 +27,20 @@ class DMAgent(BaseAgent):
         # Store map images to inject into the first user message
         # (system prompt only supports text blocks).
         # Keep only the largest images (likely maps) and cap total payload.
+        # Skip entirely if the provider doesn't support vision (e.g. Ollama text models).
         MAX_IMAGES = 3
         MAX_TOTAL_BYTES = 3 * 1024 * 1024  # 3 MB
-        candidates = sorted(map_images or [], key=lambda x: len(x[0]), reverse=True)
         self._map_images: list[tuple[bytes, str]] = []
-        total_bytes = 0
-        for img_bytes, media_type in candidates[:MAX_IMAGES]:
-            if total_bytes + len(img_bytes) > MAX_TOTAL_BYTES:
-                break
-            self._map_images.append((img_bytes, media_type))
-            total_bytes += len(img_bytes)
+
+        provider = create_provider(settings)
+        if provider.guardrails.supports_images:
+            candidates = sorted(map_images or [], key=lambda x: len(x[0]), reverse=True)
+            total_bytes = 0
+            for img_bytes, media_type in candidates[:MAX_IMAGES]:
+                if total_bytes + len(img_bytes) > MAX_TOTAL_BYTES:
+                    break
+                self._map_images.append((img_bytes, media_type))
+                total_bytes += len(img_bytes)
 
         tools = list(DM_TOOLS)
         if not enable_reviews:

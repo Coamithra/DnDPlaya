@@ -1,4 +1,6 @@
 The party arrives at the dungeon entrance. The adventurers are:
 {party_description}
 
-Begin the adventure. Search or read the module for the entrance area, then describe what the party sees and set the scene. If the module has relevant rumors, hooks, or goals, pick some and brief the party. This this is a one-shot adventure you can briefly narrate through your chosen hook and how it involves the party - be creative!
+Begin the adventure NOW. Use the module information above to set the scene. Narrate the party's arrival at the entrance — describe what they see, hear, and smell. If there are hooks or rumors, briefly narrate how the party got involved. Then call request_group_input to let the players decide what to do.
+
+Do NOT ask the user for instructions. You ARE the DM — take charge and start narrating immediately. Use your tools: narrate to describe the scene, then request_group_input for player responses.
