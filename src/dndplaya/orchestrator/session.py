@@ -229,27 +229,26 @@ class Session:
         """Print a notable event on its own line."""
         print(f"\n  >> {text}", end="", flush=True)
 
-    # Bootstrap search terms — generic D&D module words that appear in most
-    # adventures.  OR-matched against pages, so broad coverage is fine.
-    _BOOTSTRAP_SEARCH = (
-        "introduction overview background adventure hook quest entrance "
-        "room area monster creature trap treasure villain leader"
-    )
-    _BOOTSTRAP_QUESTION = (
-        "Summarize this dungeon module as a DM prep sheet using these sections:\n"
-        "## Setting\n## Adventure Overview\n## Key NPCs & Villains\n"
-        "## Adventure Hooks\n## Entrance\n## Key Areas\n## Warnings\n\n"
-        "Do NOT include stat blocks — the DM will look those up during play. "
-        "Keep ALL sections even if empty. Only add, never remove."
-    )
+    # Bootstrap queries — separate focused questions that each search a
+    # small slice of the module.  Chaining across the whole module doesn't
+    # work with small models (recency bias overwrites earlier content).
+    _BOOTSTRAP_QUERIES = [
+        ("introduction overview background",
+         "What is this module about? Setting, adventure overview, and tone."),
+        ("villain boss leader named",
+         "Who are the main NPCs or villains? Names, roles, motivations. No stat blocks."),
+        ("hook adventure background quest reward",
+         "What are the adventure hooks — reasons for adventurers to visit?"),
+        ("entrance door gate tunnel start",
+         "Where is the dungeon entrance and what does the party encounter first?"),
+    ]
 
     def _bootstrap_module_knowledge(self) -> str:
-        """Run one broad search+summarize to build a prep sheet.
+        """Run focused search+summarize queries to build a prep sheet.
 
-        Uses wide search terms to hit most pages, then chains summaries
-        page by page. Each summary builds on the last, so the final
-        result is a comprehensive prep sheet without needing multiple
-        queries or a synthesis step.
+        Each query targets a different aspect of the module with narrow
+        search terms, avoiding the recency-bias problem of chaining
+        through 20+ pages in one query.
         """
         if not self.pages:
             return ""
@@ -257,16 +256,20 @@ class Session:
         print("\n  Bootstrapping module knowledge...", end="", flush=True)
         self.transcript.add_system_event("Bootstrapping module knowledge...")
 
-        result = self._handle_search_module({
-            "search_terms": self._BOOTSTRAP_SEARCH,
-            "question": self._BOOTSTRAP_QUESTION,
-        })
+        sections: list[str] = []
+        for search_terms, question in self._BOOTSTRAP_QUERIES:
+            result = self._handle_search_module({
+                "search_terms": search_terms,
+                "question": question,
+            })
+            if result and "No matches found" not in result:
+                sections.append(result)
 
-        if not result or "No matches found" in result:
+        if not sections:
             return ""
 
-        prep_sheet = f"## Module Prep Sheet\n\n{result}"
-        print(" done", flush=True)
+        prep_sheet = "## Module Prep Sheet\n\n" + "\n\n".join(sections)
+        print(f" done ({len(sections)} sections)", flush=True)
         self.transcript.add_system_event(f"MODULE PREP SHEET:\n\n{prep_sheet}")
         return prep_sheet
 
@@ -1637,6 +1640,8 @@ class Session:
             page_lower = page_text.lower()
             if any(term in page_lower for term in terms):
                 matching_pages.append((i + 1, page_text))
+                if len(matching_pages) >= 5:
+                    break
 
         if not matching_pages:
             self.transcript.add_system_event("No matches found.")
