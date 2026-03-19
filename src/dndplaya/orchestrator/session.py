@@ -221,9 +221,9 @@ class Session:
     )
     _BOOTSTRAP_QUESTION = (
         "Summarize this dungeon module as a DM prep sheet. Include: "
-        "title, setting, level range, adventure overview, key NPCs and "
-        "villains (with stats if available), adventure hooks, the entrance "
-        "location, and any important warnings for the DM."
+        "setting, adventure overview, key NPCs and villains, adventure "
+        "hooks, the entrance location, and any important warnings for the DM. "
+        "Do NOT include stat blocks — the DM will look those up during play."
     )
 
     def _bootstrap_module_knowledge(self) -> str:
