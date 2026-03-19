@@ -175,6 +175,22 @@ class Session:
         """Check if all party members are dead (TPK)."""
         return not self.state.get_alive_characters()
 
+    def _log_side_call(
+        self, name: str, system: str, prompt: str, result: str,
+    ) -> None:
+        """Log a side-call (summarizer, synthesizer) to agent_logs/side_calls.txt."""
+        if not self._log_dir:
+            return
+        logs_dir = self._log_dir / "agent_logs"
+        logs_dir.mkdir(exist_ok=True)
+        with open(logs_dir / "side_calls.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\n")
+            f.write(f"[{name} turn={self.total_turns}]\n")
+            f.write(f"{'='*60}\n")
+            f.write(f"--- SYSTEM ---\n{system}\n\n")
+            f.write(f"--- PROMPT ---\n{prompt}\n\n")
+            f.write(f"--- RESPONSE ---\n{result}\n\n")
+
     def _dump_agent_logs(self) -> None:
         """Append all agent conversation histories to disk (live debugging).
 
@@ -1560,7 +1576,9 @@ class Session:
                 f"{template}"
             )
         try:
-            return agent.send(prompt)
+            result = agent.send(prompt)
+            self._log_side_call("PageSummarizer", system, prompt, result)
+            return result
         except Exception as e:
             return f"(summarization error: {e})"
 
