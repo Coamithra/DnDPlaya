@@ -209,11 +209,57 @@ class Session:
         """Print a notable event on its own line."""
         print(f"\n  >> {text}", end="", flush=True)
 
+    # Bootstrap queries to seed the DM's knowledge before the session.
+    # Each tuple is (search_terms, question).
+    _BOOTSTRAP_QUERIES = [
+        ("introduction", "What is this dungeon module about? Title, setting, level range, and adventure overview."),
+        ("NPC", "Who are the main NPCs, their names, roles, and motivations?"),
+        ("hook rumor goal", "What are the reasons or hooks for adventurers to visit this dungeon?"),
+        ("entrance", "Where is the dungeon entrance and what does the party encounter first?"),
+    ]
+
+    def _bootstrap_module_knowledge(self) -> str:
+        """Run targeted search_module queries to build a prep sheet.
+
+        Instead of summarizing the entire module in one shot (which can
+        overflow small context windows), we run a few focused queries
+        through the RAG pipeline and compile the results into a brief
+        prep sheet that goes into the DM's opening prompt.
+        """
+        if not self.pages:
+            return ""
+
+        print("\n  Bootstrapping module knowledge...", end="", flush=True)
+        self.transcript.add_system_event("Bootstrapping module knowledge via RAG queries...")
+
+        sections: list[str] = []
+        for search_terms, question in self._BOOTSTRAP_QUERIES:
+            result = self._handle_search_module({
+                "search_terms": search_terms,
+                "question": question,
+            })
+            if result and "No matches found" not in result:
+                sections.append(result)
+
+        if not sections:
+            return ""
+
+        prep_sheet = "## Module Prep Sheet\n\n" + "\n\n".join(sections)
+        print(f" done ({len(sections)} sections)", flush=True)
+        self.transcript.add_system_event(
+            f"MODULE PREP SHEET (from {len(sections)} bootstrap queries):\n\n"
+            + prep_sheet
+        )
+        return prep_sheet
+
     def run(self) -> SessionResult:
         """Run the complete session via DM conversation loop."""
         print(f"Session start | Party: {', '.join(c.name for c in self.party)}", flush=True)
 
         try:
+            # Bootstrap module knowledge via RAG queries (replaces upfront summary)
+            prep_sheet = self._bootstrap_module_knowledge()
+
             # Build opening prompt
             party_desc = "\n".join(
                 f"- {c.name} ({c.char_class} level {c.level}, {c.pronouns}): "
@@ -221,6 +267,8 @@ class Session:
                 for c in self.party
             )
             opening = load_prompt("session_start", party_description=party_desc)
+            if prep_sheet:
+                opening = prep_sheet + "\n\n" + opening
 
             # First DM turn
             if self.ui:
@@ -1431,46 +1479,180 @@ class Session:
                 lines.append(f"  Skills: {skill_str}")
         return "Party Status:\n" + "\n".join(lines)
 
+    def _get_page_window(self, page_number: int) -> str:
+        """Return the text of a page plus its ±1 neighbors.
+
+        Content that spans page boundaries (room descriptions, stat blocks)
+        is captured by including adjacent pages.  The caller is responsible
+        for deduplication when multiple hits are close together.
+
+        TODO: Consider chunking by headings instead of PDF pages for
+        better logical boundaries.  Also consider a sliding-window
+        heuristic that only grabs neighbors when the match is near
+        a page edge.
+        """
+        if not self.pages:
+            return ""
+        parts: list[str] = []
+        for p in (page_number - 1, page_number, page_number + 1):
+            if 1 <= p <= len(self.pages):
+                parts.append(f"--- Page {p} ---\n{self.pages[p - 1]}")
+        return "\n\n".join(parts)
+
+    def _summarize_page_window(self, page_window: str, question: str) -> str:
+        """Side-call: ask the LLM to extract relevant info from page(s).
+
+        Creates a temporary BaseAgent with a focused system prompt, sends
+        the page text + question, and returns a short summary (~200 words).
+
+        *page_window* may contain 1-3 pages (the hit page ± neighbors).
+        """
+        from ..agents.base import BaseAgent
+
+        agent = BaseAgent(
+            name="PageSummarizer",
+            system_prompt=(
+                "You are a module reference assistant. Given one or more pages "
+                "from a D&D module, extract ONLY the information relevant to "
+                "the question. Be concise (200 words max). Include specific "
+                "numbers (HP, AC, CR, DC, damage, quantities). If the pages "
+                "have no relevant information, say 'No relevant information "
+                "found.'"
+            ),
+            settings=self.settings,
+        )
+        prompt = (
+            f"Question: {question}\n\n"
+            f"{page_window}\n\n"
+            f"Extract the relevant information:"
+        )
+        try:
+            return agent.send(prompt)
+        except Exception as e:
+            return f"(summarization error: {e})"
+
+    def _synthesize_fragments(
+        self, fragments: list[tuple[int, str]], question: str,
+    ) -> str:
+        """Combine per-page summaries into one coherent answer.
+
+        Only called when multiple pages matched a search.
+        """
+        from ..agents.base import BaseAgent
+
+        agent = BaseAgent(
+            name="Synthesizer",
+            system_prompt=(
+                "You are a module reference assistant. Given summaries from "
+                "different pages of a D&D module, combine them into ONE "
+                "concise, comprehensive answer. Keep specific numbers. "
+                "Do not add information that isn't in the fragments."
+            ),
+            settings=self.settings,
+        )
+        body = "\n\n".join(
+            f"Page {page}: {summary}" for page, summary in fragments
+        )
+        prompt = (
+            f"Question: {question}\n\n"
+            f"--- Page summaries ---\n{body}\n--- End ---\n\n"
+            f"Provide a combined answer:"
+        )
+        try:
+            return agent.send(prompt)
+        except Exception as e:
+            # Fall back to raw fragments
+            return "\n".join(f"Page {p}: {s}" for p, s in fragments)
+
     def _handle_search_module(self, args: dict) -> str:
-        query = args.get("query", "")
-        if not query:
+        # Accept both "search_terms" (new) and "query" (backward compat)
+        search_terms = args.get("search_terms", args.get("query", ""))
+        question = args.get("question", "")
+
+        if not search_terms:
             return "No search query provided."
         if not self.pages:
             return "Module pages not loaded."
 
         self.module_references.append({
             "tool": "search_module",
-            "query": query,
+            "query": search_terms,
             "turn": self.total_turns,
         })
         self._turns_without_module_ref = 0
-        self._tick("DM", f"search:{query[:20]}")
-        self.transcript.add_system_event(f"DM searches module: \"{query}\"")
+        self._tick("DM", f"search:{search_terms[:20]}")
 
-        matches = []
-        query_lower = query.lower()
+        # Log the research intent
+        self.transcript.add_system_event(
+            f'DM is researching the module...\n'
+            f'  Looking for: "{search_terms}"'
+            + (f'\n  Question: "{question}"' if question else "")
+        )
+
+        # 1. Find matching pages (regex search)
+        matching_pages: list[tuple[int, str]] = []  # (page_num, page_text)
+        query_lower = search_terms.lower()
         for i, page_text in enumerate(self.pages):
-            page_lower = page_text.lower()
-            pos = page_lower.find(query_lower)
-            if pos != -1:
-                # Extract ~150 chars around the match
+            if query_lower in page_text.lower():
+                matching_pages.append((i + 1, page_text))
+                if len(matching_pages) >= 5:
+                    break
+
+        if not matching_pages:
+            return f'No matches found for "{search_terms}".'
+
+        # 2. If no question, return snippets (backward compatible)
+        if not question:
+            snippets = []
+            for page_num, page_text in matching_pages:
+                page_lower = page_text.lower()
+                pos = page_lower.find(query_lower)
                 start = max(0, pos - 75)
-                end = min(len(page_text), pos + len(query) + 75)
+                end = min(len(page_text), pos + len(search_terms) + 75)
                 snippet = page_text[start:end].replace("\n", " ").strip()
                 if start > 0:
                     snippet = "..." + snippet
                 if end < len(page_text):
                     snippet = snippet + "..."
-                matches.append(f"Page {i + 1}: {snippet}")
-                if len(matches) >= 5:
-                    break
+                snippets.append(f"Page {page_num}: {snippet}")
+            return "Search results:\n" + "\n\n".join(snippets)
 
-        if not matches:
-            return f"No matches found for \"{query}\"."
-        return "Search results:\n" + "\n\n".join(matches)
+        # 3. Build deduplicated page windows (±1 neighbors) and summarize
+        #    If pages 3 and 4 both match, their windows overlap — we merge
+        #    them into one call instead of reading pages twice.
+        fragments: list[tuple[int, str]] = []
+        pages_already_windowed: set[int] = set()
+        for page_num, _page_text in matching_pages:
+            if page_num in pages_already_windowed:
+                continue  # already covered by a neighbor's window
+            # Mark this page and its neighbors as covered
+            for p in (page_num - 1, page_num, page_num + 1):
+                if 1 <= p <= len(self.pages):
+                    pages_already_windowed.add(p)
+            self._tick("DM", f"sum:p{page_num}")
+            window = self._get_page_window(page_num)
+            summary = self._summarize_page_window(window, question)
+            fragments.append((page_num, summary))
+            self.transcript.add_system_event(
+                f"  Page {page_num}: {summary[:200]}"
+                + ("..." if len(summary) > 200 else "")
+            )
+
+        # 4. If multiple pages, synthesize into one answer
+        if len(fragments) == 1:
+            page_num, summary = fragments[0]
+            answer = f"From page {page_num}:\n{summary}"
+        else:
+            self._tick("DM", "synthesize")
+            answer = self._synthesize_fragments(fragments, question)
+
+        self.transcript.add_system_event(f"  Answer: {answer[:300]}")
+        return answer
 
     def _handle_read_page(self, args: dict) -> str:
         page_number = args.get("page_number", 0)
+        question = args.get("question", "")
+
         if not self.pages:
             return "Module pages not loaded."
         if page_number < 1 or page_number > len(self.pages):
@@ -1487,8 +1669,25 @@ class Session:
         })
         self._turns_without_module_ref = 0
         self._tick("DM", f"p{page_number}")
+
+        page_text = self.pages[page_number - 1]
+
+        # If question provided, summarize with ±1 page window
+        if question:
+            self.transcript.add_system_event(
+                f'DM reads page {page_number} (question: "{question}")'
+            )
+            self._tick("DM", f"sum:p{page_number}")
+            window = self._get_page_window(page_number)
+            summary = self._summarize_page_window(window, question)
+            self.transcript.add_system_event(
+                f"  Page {page_number} summary: {summary[:200]}"
+                + ("..." if len(summary) > 200 else "")
+            )
+            return f"--- Page {page_number} (summary) ---\n{summary}"
+
         self.transcript.add_system_event(f"DM reads page {page_number}")
-        return f"--- Page {page_number} ---\n{self.pages[page_number - 1]}"
+        return f"--- Page {page_number} ---\n{page_text}"
 
     def _handle_next_page(self, args: dict) -> str:
         if not self.pages:

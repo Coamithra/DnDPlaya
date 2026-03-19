@@ -233,26 +233,39 @@ DM_TOOLS = [
     {
         "name": "search_module",
         "description": (
-            "Search the module text for a keyword or phrase. "
-            "Returns up to 5 matches with page numbers and surrounding context. "
-            "Use to find monster stats, room descriptions, trap details, etc."
+            "Search the module text for keywords and answer a question. "
+            "Finds matching pages, summarizes each for your question, and "
+            "returns a focused answer. Use to look up monster stats, room "
+            "descriptions, trap details, treasure, etc."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {
+                "search_terms": {
                     "type": "string",
-                    "description": "Search term (e.g., 'goblin', 'trap', 'treasure')",
+                    "description": (
+                        "Keywords to search for (e.g., 'room 5 grove', "
+                        "'goblin', 'trap'). Drives the page lookup."
+                    ),
+                },
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "What you want to know (e.g., 'What monsters, traps, "
+                        "and treasure are in this room?'). Drives per-page "
+                        "summarization."
+                    ),
                 },
             },
-            "required": ["query"],
+            "required": ["search_terms"],
         },
     },
     {
         "name": "read_page",
         "description": (
-            "Read the full text of a specific page from the module. "
-            "Pages are 1-indexed."
+            "Read a specific page from the module. If you provide a question, "
+            "returns a focused summary answering it. Without a question, "
+            "returns the full page text. Pages are 1-indexed."
         ),
         "input_schema": {
             "type": "object",
@@ -260,6 +273,14 @@ DM_TOOLS = [
                 "page_number": {
                     "type": "integer",
                     "description": "Page number to read (1-indexed)",
+                },
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "Optional: a question to focus the summary "
+                        "(e.g., 'What are the room contents?'). "
+                        "If omitted, returns the full page text."
+                    ),
                 },
             },
             "required": ["page_number"],

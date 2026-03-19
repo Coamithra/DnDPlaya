@@ -17,7 +17,9 @@ from .pdf.chunker import chunk_markdown
 from .mechanics.characters import create_default_party
 from .orchestrator.session import Session
 from .feedback.reviews import generate_all_reviews
-from .agents.summarizer import generate_module_summary
+# generate_module_summary and create_provider kept for future use
+# when the upfront summarizer is re-enabled alongside bootstrap RAG
+from .agents.provider import create_provider  # noqa: F401
 
 console = Console()
 
@@ -87,11 +89,10 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
     pages = extract_pages(pdf_path)
     console.print(f"  {len(markdown):,} chars, {len(pages)} pages, {len(images)} images")
 
-    # Generate pre-game module summary
-    console.print("Generating module summary...")
-    pdf_filename = Path(pdf_path).name
-    summary = generate_module_summary(markdown, settings, pdf_filename=pdf_filename)
-    console.print(f"  {len(summary):,} chars")
+    # Module summary: skip the upfront LLM summarizer call.
+    # The session bootstraps module knowledge via targeted RAG queries
+    # at startup, which works better with small context windows.
+    summary = ""
 
     # Run sessions
     for run_num in range(1, runs + 1):
@@ -271,11 +272,8 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
     pages = extract_pages(pdf_path)
     console.print(f"  {len(markdown):,} chars, {len(pages)} pages, {len(images)} images")
 
-    # Generate pre-game module summary
-    console.print("Generating module summary...")
-    pdf_filename = Path(pdf_path).name
-    summary = generate_module_summary(markdown, settings, pdf_filename=pdf_filename)
-    console.print(f"  {len(summary):,} chars")
+    # Module summary: skip upfront LLM call, bootstrap via RAG at session start.
+    summary = ""
 
     # Create output dir for transcript
     from datetime import datetime as _dt
