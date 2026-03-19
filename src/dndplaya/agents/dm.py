@@ -19,10 +19,20 @@ class DMAgent(BaseAgent):
         map_images: list[tuple[bytes, str]] | None = None,
         music_tracks: list[str] | None = None,
         enable_reviews: bool = True,
+        room_map: str = "",
     ):
         self.runnability_notes: list[str] = []
 
         system_text = load_prompt("dm_system", summary=summary)
+
+        # Inject room connection map into system prompt if provided
+        if room_map:
+            system_text += (
+                "\n\n## Dungeon Map (Room Connections)\n"
+                "Use this to navigate the dungeon. It shows how rooms connect "
+                "and what the party must do to move between them.\n\n"
+                f"<dungeon-map>\n{room_map}\n</dungeon-map>"
+            )
 
         # Store map images to inject into the first user message
         # (system prompt only supports text blocks).

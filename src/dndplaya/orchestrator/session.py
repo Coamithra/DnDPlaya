@@ -75,6 +75,7 @@ class Session:
         enable_thinking: bool = False,
         music_tracks: list[str] | None = None,
         enable_reviews: bool = True,
+        room_map: str = "",
     ):
         self.settings = settings
         self.dice = DiceRoller(seed=seed or settings.seed)
@@ -105,6 +106,7 @@ class Session:
                 map_images=map_images,
                 music_tracks=music_tracks,
                 enable_reviews=enable_reviews,
+                room_map=room_map,
             )
         else:
             self.dm = DMAgent(
@@ -113,6 +115,7 @@ class Session:
                 map_images=map_images,
                 music_tracks=music_tracks,
                 enable_reviews=enable_reviews,
+                room_map=room_map,
             )
 
         # Provider guardrails — the provider declares what constraints it needs

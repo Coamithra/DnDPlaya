@@ -94,6 +94,18 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
     # at startup, which works better with small context windows.
     summary = ""
 
+    # Auto-detect room connections file: {pdf_stem}_room_connections.txt
+    pdf_stem = Path(pdf_path).stem
+    room_map = ""
+    for candidate in [
+        Path(pdf_path).parent / f"{pdf_stem}_room_connections.txt",
+        Path(f"{pdf_stem}_room_connections.txt"),
+    ]:
+        if candidate.exists():
+            room_map = candidate.read_text(encoding="utf-8")
+            console.print(f"  Room map: {candidate}")
+            break
+
     # Run sessions
     for run_num in range(1, runs + 1):
         run_seed = settings.seed + run_num - 1 if settings.seed is not None else None
@@ -121,6 +133,7 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
             summary=summary,
             log_path=log_path,
             max_turns=settings.max_turns,
+            room_map=room_map,
         )
         result = session.run()
 
@@ -275,6 +288,18 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
     # Module summary: skip upfront LLM call, bootstrap via RAG at session start.
     summary = ""
 
+    # Auto-detect room connections file
+    pdf_stem = Path(pdf_path).stem
+    room_map = ""
+    for candidate in [
+        Path(pdf_path).parent / f"{pdf_stem}_room_connections.txt",
+        Path(f"{pdf_stem}_room_connections.txt"),
+    ]:
+        if candidate.exists():
+            room_map = candidate.read_text(encoding="utf-8")
+            console.print(f"  Room map: {candidate}")
+            break
+
     # Create output dir for transcript
     from datetime import datetime as _dt
     timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
@@ -317,6 +342,7 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
             enable_thinking=settings.thinking,
             music_tracks=music_tracks,
             enable_reviews=not settings.no_reviews,
+            room_map=room_map,
         )
 
     console.print(f"Starting UI on http://localhost:{settings.port}")
