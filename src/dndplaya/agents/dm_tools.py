@@ -244,8 +244,9 @@ DM_TOOLS = [
                 "search_terms": {
                     "type": "string",
                     "description": (
-                        "Keywords to search for (e.g., 'room 5 grove', "
-                        "'goblin', 'trap'). Drives the page lookup."
+                        "Space-separated keywords to search for. Each word is "
+                        "matched independently (OR search). E.g. 'goblin trap' "
+                        "finds pages containing 'goblin' OR 'trap'."
                     ),
                 },
                 "question": {

@@ -215,10 +215,10 @@ class Session:
     # Bootstrap queries to seed the DM's knowledge before the session.
     # Each tuple is (search_terms, question).
     _BOOTSTRAP_QUERIES = [
-        ("introduction", "What is this dungeon module about? Title, setting, level range, and adventure overview."),
-        ("NPC", "Who are the main NPCs, their names, roles, and motivations?"),
-        ("hook rumor goal", "What are the reasons or hooks for adventurers to visit this dungeon?"),
-        ("entrance", "Where is the dungeon entrance and what does the party encounter first?"),
+        ("introduction overview background", "What is this dungeon module about? Title, setting, level range, and adventure overview."),
+        ("druid archdruid leader villain", "Who are the main NPCs, their names, roles, and motivations?"),
+        ("hook adventure background quest", "What are the reasons or hooks for adventurers to visit this dungeon?"),
+        ("entrance start arrive", "Where is the dungeon entrance and what does the party encounter first?"),
     ]
 
     def _bootstrap_module_knowledge(self) -> str:
@@ -1592,11 +1592,14 @@ class Session:
             + (f'\n  Question: "{question}"' if question else "")
         )
 
-        # 1. Find matching pages (regex search)
+        # 1. Find matching pages — split on spaces/commas/pipes, match ANY term
         matching_pages: list[tuple[int, str]] = []  # (page_num, page_text)
-        query_lower = search_terms.lower()
+        terms = [t.strip().lower() for t in re.split(r'[,|\s]+', search_terms) if len(t.strip()) >= 2]
+        if not terms:
+            terms = [search_terms.lower()]
         for i, page_text in enumerate(self.pages):
-            if query_lower in page_text.lower():
+            page_lower = page_text.lower()
+            if any(term in page_lower for term in terms):
                 matching_pages.append((i + 1, page_text))
                 if len(matching_pages) >= 5:
                     break
@@ -1609,7 +1612,14 @@ class Session:
             snippets = []
             for page_num, page_text in matching_pages:
                 page_lower = page_text.lower()
-                pos = page_lower.find(query_lower)
+                # Find the first matching term for the snippet
+                pos = -1
+                for term in terms:
+                    pos = page_lower.find(term)
+                    if pos != -1:
+                        break
+                if pos == -1:
+                    pos = 0
                 start = max(0, pos - 75)
                 end = min(len(page_text), pos + len(search_terms) + 75)
                 snippet = page_text[start:end].replace("\n", " ").strip()
