@@ -54,7 +54,7 @@ class SessionTranscript:
             quoted = "\n".join(
                 f"> {l}" if l.strip() else ">" for l in content.split("\n")
             )
-            line = f"\n{quoted}\n\n---\n\n"
+            line = f"\n{quoted}\n\n"
         else:
             line = f"\n`{content}`\n\n"
         with open(self._log_path, "a", encoding="utf-8") as f:
