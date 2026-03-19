@@ -1588,12 +1588,13 @@ class Session:
         self._turns_without_module_ref = 0
         self._tick("DM", f"search:{search_terms[:20]}")
 
-        # Log the research intent
-        self.transcript.add_system_event(
-            f'DM is researching the module...\n'
-            f'  Looking for: "{search_terms}"'
-            + (f'\n  Question: "{question}"' if question else "")
-        )
+        # Build transcript log as one block
+        log = [
+            f'DM is researching the module...',
+            f'  Looking for: "{search_terms}"',
+        ]
+        if question:
+            log.append(f'  Question: "{question}"')
 
         # 1. Find matching pages — split on spaces/commas/pipes, match ANY term
         matching_pages: list[tuple[int, str]] = []  # (page_num, page_text)
@@ -1608,14 +1609,12 @@ class Session:
                     break
 
         if not matching_pages:
-            self.transcript.add_system_event("  No matches found.")
+            log.append("  No matches found.")
+            self.transcript.add_system_event("\n".join(log))
             return f'No matches found for "{search_terms}".'
 
-        # Log which pages matched
         page_nums = [p for p, _ in matching_pages]
-        self.transcript.add_system_event(
-            f"  Found matches on pages {', '.join(str(p) for p in page_nums)}"
-        )
+        log.append(f"  Found matches on pages {', '.join(str(p) for p in page_nums)}")
 
         # 2. If no question, return snippets (backward compatible)
         if not question:
@@ -1637,30 +1636,25 @@ class Session:
                 if end < len(page_text):
                     snippet = snippet + "..."
                 snippets.append(f"Page {page_num}: {snippet}")
+            self.transcript.add_system_event("\n".join(log))
             return "Search results:\n" + "\n\n".join(snippets)
 
         # 3. Build deduplicated page windows (±1 neighbors) and summarize
-        #    If pages 3 and 4 both match, their windows overlap — we merge
-        #    them into one call instead of reading pages twice.
         num_pages = len(self.pages)
         fragments: list[tuple[int, str]] = []
         pages_already_windowed: set[int] = set()
         for page_num, _page_text in matching_pages:
             if page_num in pages_already_windowed:
                 continue  # already covered by a neighbor's window
-            # Compute the actual window range
             win_lo = max(1, page_num - 1)
             win_hi = min(num_pages, page_num + 1)
-            # Mark pages in window as covered
             for p in range(win_lo, win_hi + 1):
                 pages_already_windowed.add(p)
             self._tick("DM", f"sum:p{page_num}")
             window = self._get_page_window(page_num)
             summary = self._summarize_page_window(window, question)
             fragments.append((page_num, summary))
-            self.transcript.add_system_event(
-                f"  Page {page_num} ({win_lo}-{win_hi}): {summary}"
-            )
+            log.append(f"  Page {page_num} ({win_lo}-{win_hi}): {summary}")
 
         # 4. If multiple pages, synthesize into one answer
         if len(fragments) == 1:
@@ -1670,7 +1664,8 @@ class Session:
             self._tick("DM", "synthesize")
             answer = self._synthesize_fragments(fragments, question)
 
-        self.transcript.add_system_event(f"  Answer: {answer}")
+        log.append(f"  Answer: {answer}")
+        self.transcript.add_system_event("\n".join(log))
         return answer
 
     def _handle_read_page(self, args: dict) -> str:
@@ -1701,15 +1696,13 @@ class Session:
             num_pages = len(self.pages)
             win_lo = max(1, page_number - 1)
             win_hi = min(num_pages, page_number + 1)
-            self.transcript.add_system_event(
-                f'DM reads page {page_number} ({win_lo}-{win_hi})\n'
-                f'  Question: "{question}"'
-            )
             self._tick("DM", f"sum:p{page_number}")
             window = self._get_page_window(page_number)
             summary = self._summarize_page_window(window, question)
             self.transcript.add_system_event(
-                f"  Page {page_number} ({win_lo}-{win_hi}): {summary}"
+                f'DM reads page {page_number} ({win_lo}-{win_hi})\n'
+                f'  Question: "{question}"\n'
+                f'  Page {page_number} ({win_lo}-{win_hi}): {summary}'
             )
             return f"--- Page {page_number} (summary) ---\n{summary}"
 
