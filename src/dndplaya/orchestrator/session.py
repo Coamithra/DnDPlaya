@@ -236,10 +236,11 @@ class Session:
         "room area monster creature trap treasure villain leader"
     )
     _BOOTSTRAP_QUESTION = (
-        "Summarize this dungeon module as a DM prep sheet. Include: "
-        "setting, adventure overview, key NPCs and villains, adventure "
-        "hooks, the entrance location, and any important warnings for the DM. "
-        "Do NOT include stat blocks — the DM will look those up during play."
+        "Summarize this dungeon module as a DM prep sheet using these sections:\n"
+        "## Setting\n## Adventure Overview\n## Key NPCs & Villains\n"
+        "## Adventure Hooks\n## Entrance\n## Key Areas\n## Warnings\n\n"
+        "Do NOT include stat blocks — the DM will look those up during play. "
+        "Keep ALL sections even if empty. Only add, never remove."
     )
 
     def _bootstrap_module_knowledge(self) -> str:
@@ -1549,31 +1550,19 @@ class Session:
             system_prompt=system,
             settings=self.settings,
         )
-        template = (
-            "## Setting\n(world, location, tone)\n\n"
-            "## Adventure Overview\n(synopsis)\n\n"
-            "## Key NPCs & Villains\n(names, roles, motivations — no stat blocks)\n\n"
-            "## Adventure Hooks\n(why adventurers would come here)\n\n"
-            "## Entrance\n(where it is, what the party encounters first)\n\n"
-            "## Key Areas\n(notable rooms/locations, one line each)\n\n"
-            "## Warnings\n(deadly traps, confusing layouts, anything the DM should watch for)\n"
-        )
         if prior_summary:
             prompt = (
                 f"Here is a page from a D&D module. The question is: {question}\n\n"
-                f"Current prep sheet:\n{prior_summary}\n\n"
+                f"Current summary:\n{prior_summary}\n\n"
                 f"New page:\n{page_window}\n\n"
-                f"Update the prep sheet with any new info from this page. "
-                f"Keep ALL existing sections and their content — only add, "
-                f"never remove. Return the full updated prep sheet:"
+                f"Add any relevant info from this page to the summary and "
+                f"return the updated summary:"
             )
         else:
             prompt = (
                 f"Here is a page from a D&D module. The question is: {question}\n\n"
                 f"{page_window}\n\n"
-                f"Fill in this prep sheet template with info from the page. "
-                f"Leave sections empty if no relevant info found.\n\n"
-                f"{template}"
+                f"Extract the relevant information:"
             )
         try:
             result = agent.send(prompt)
