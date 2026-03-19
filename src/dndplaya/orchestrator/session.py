@@ -1505,33 +1505,46 @@ class Session:
                 parts.append(f"--- Page {p} ---\n{self.pages[p - 1]}")
         return "\n\n".join(parts)
 
-    def _summarize_page_window(self, page_window: str, question: str) -> str:
+    def _summarize_page_window(
+        self, page_window: str, question: str, prior_summary: str = "",
+    ) -> str:
         """Side-call: ask the LLM to extract relevant info from page(s).
 
         Creates a temporary BaseAgent with a focused system prompt, sends
         the page text + question, and returns a short summary (~200 words).
 
         *page_window* may contain 1-3 pages (the hit page ± neighbors).
+        *prior_summary* — if provided, the LLM is asked to add to this
+        rather than starting from scratch.  This chains summaries so each
+        builds on the last, avoiding redundancy and eliminating the need
+        for a separate synthesis step.
         """
         from ..agents.base import BaseAgent
 
         agent = BaseAgent(
             name="PageSummarizer",
             system_prompt=(
-                "You are a module reference assistant. Given one or more pages "
-                "from a D&D module, extract ONLY the information relevant to "
-                "the question. Be concise (200 words max). Include specific "
-                "numbers (HP, AC, CR, DC, damage, quantities). If the pages "
-                "have no relevant information, say 'No relevant information "
-                "found.'"
+                "You are reading pages from a D&D module. Be concise "
+                "(200 words max). Include specific numbers (HP, AC, CR, "
+                "DC, damage, quantities). Only include information from "
+                "the provided pages."
             ),
             settings=self.settings,
         )
-        prompt = (
-            f"Question: {question}\n\n"
-            f"{page_window}\n\n"
-            f"Extract the relevant information:"
-        )
+        if prior_summary:
+            prompt = (
+                f"Here is a page from a D&D module. The question is: {question}\n\n"
+                f"Summary so far:\n{prior_summary}\n\n"
+                f"New page:\n{page_window}\n\n"
+                f"Add any relevant info from this page to the summary and "
+                f"return the updated summary:"
+            )
+        else:
+            prompt = (
+                f"Here is a page from a D&D module. The question is: {question}\n\n"
+                f"{page_window}\n\n"
+                f"Extract the relevant information:"
+            )
         try:
             return agent.send(prompt)
         except Exception as e:
@@ -1637,10 +1650,13 @@ class Session:
                 snippets.append(f"Page {page_num}: {snippet}")
             return "Search results:\n" + "\n\n".join(snippets)
 
-        # 3. Build deduplicated page windows (±1 neighbors) and summarize
+        # 3. Build deduplicated page windows (±1 neighbors) and chain summaries.
+        #    Each summary builds on the previous one ("anything to add?"),
+        #    so the final summary IS the combined answer — no synthesis needed.
         num_pages = len(self.pages)
-        fragments: list[tuple[int, str]] = []
+        running_summary = ""
         pages_already_windowed: set[int] = set()
+        summarized_pages: list[int] = []
         for page_num, _page_text in matching_pages:
             if page_num in pages_already_windowed:
                 continue  # already covered by a neighbor's window
@@ -1650,23 +1666,20 @@ class Session:
                 pages_already_windowed.add(p)
             self._tick("DM", f"sum:p{page_num}")
             window = self._get_page_window(page_num)
-            summary = self._summarize_page_window(window, question)
-            fragments.append((page_num, summary))
-            # Transcript: page label (backtick) then summary (blockquote)
-            self.transcript.add_system_event(f"Page {page_num} ({win_lo}-{win_hi}):")
-            self.transcript.add_system_event(summary)
+            running_summary = self._summarize_page_window(
+                window, question, prior_summary=running_summary,
+            )
+            summarized_pages.append(page_num)
 
-        # 4. If multiple pages, synthesize into one answer
-        if len(fragments) == 1:
-            page_num, summary = fragments[0]
-            answer = f"From page {page_num}:\n{summary}"
-        else:
-            self._tick("DM", "synthesize")
-            answer = self._synthesize_fragments(fragments, question)
-            frag_pages = ", ".join(str(p) for p, _ in fragments)
-            self.transcript.add_system_event(f"Combined summary (pages {frag_pages}):")
-            self.transcript.add_system_event(answer)
-        return answer
+        # Transcript: show which pages were read, then the final summary
+        pages_label = ", ".join(
+            str(p) for p in summarized_pages
+        )
+        self.transcript.add_system_event(
+            f"Summarized pages {pages_label}:"
+        )
+        self.transcript.add_system_event(running_summary)
+        return running_summary
 
     def _handle_read_page(self, args: dict) -> str:
         page_number = args.get("page_number", 0)
