@@ -1646,15 +1646,16 @@ class Session:
         top = scored[:5]
         top.reverse()  # chain lowest-score first so best page is summarized last
         matching_pages = [(page_num, text) for _, page_num, text in top]
+        page_scores = {page_num: score for score, page_num, _ in top}
 
         if not matching_pages:
             self.transcript.add_system_event("No matches found.")
             return f'No matches found for "{search_terms}".'
 
-        page_nums = [p for p, _ in matching_pages]
-        self.transcript.add_system_event(
-            f"Found matches on pages {', '.join(str(p) for p in page_nums)}"
+        page_list = ", ".join(
+            f"p{p} ({page_scores[p]} hits)" for p, _ in matching_pages
         )
+        self.transcript.add_system_event(f"Found matches: {page_list}")
 
         # 2. If no question, return snippets (backward compatible)
         if not question:
