@@ -1,0 +1,124 @@
+Hidden Grove of the Deep Druids - Room Connections
+===================================================
+
+GROVE LEVEL
+-----------
+
+Start (Entrance from south)
+-> 1 (door)
+-> 2 (green door, plaque reads "if you seek sustenance come alone")
+-> 3 (door)
+
+1 - Fermented Antechamber
+-> Start (door)
+
+2 - Trapped Entrance
+-> Start (green door)
+-> 4 (door north, pit trap triggered by door mechanism)
+
+3 - Infested Nightsoil Chamber
+-> Start (door)
+
+4 - Anteroom
+-> 2 (door south)
+-> 5 (secret door west, DC 20 Investigation to find, rotate tree relief)
+-> 6 (secret door east, DC 20 Investigation to find, rotate tree relief)
+-> 9 (stairway down north)
+
+5 - Arboretum
+-> 4 (secret door northeast, lever sconces on wall, DC 20 Perception to spot)
+-> 9 (hidden passage northeast, DC 20 Perception from room 9 side)
+-> 11 (passage west)
+
+6 - Buried Treasure
+-> 4 (secret door west)
+-> 7 (door north, then locked door east, DC 15 Thieves' Tools or DC 20 Athletics to force))
+-> 8 (door north, then down a set of stairs)
+
+7 - Spider Spire
+-> 6 (locked door west, DC 15 Thieves' Tools or DC 20 Athletics to force, then door south)
+-> Crown Level 3 (shaft up through ceiling, 50ft climb, DC 10 Athletics)
+-> 8 (locked door north, DC 15 Thieves' Tools or DC 20 Athletics to force)
+
+8 - Garden (Mushroom Farm)
+-> 9 (cavern passage west, at 15ft height)
+-> Roots Level 1 (waterfall down, 60ft, streams cascade off western ledge)
+
+9 - Sanctum (Central Hub, Gulthias Tree)
+-> 4 (stairway up south, via bridge)
+-> 5 (hidden passage southwest, DC 20 Perception, at 15ft height)
+-> 8 (cavern passage east, at 15ft height)
+-> 10 (passage northwest, at 10ft height)
+-> Crown Level 1 (tree trunk up, 90ft, hole in ceiling)
+-> Roots Level 1 (tree trunk down, 60ft, chasm below walkway)
+
+10 - Druid's Court
+-> 9 (passage southeast, ledge overlooking sanctum)
+-> 11 (passage west)
+
+11 - Back Room
+-> 5 (passage south)
+-> 10 (passage north)
+
+
+ROOTS LEVEL
+-----------
+Note: Entire level is flooded (3ft water, 3ft ceiling clearance).
+      Dashed areas on map are fully submerged. Difficult terrain throughout.
+
+1 - Base of the Gulthias Tree
+-> 2 (tunnel south)
+-> 3 (tunnel east, partially submerged)
+-> 4 (tunnel west)
+-> 5 (tunnel north, submerged)
+-> Grove Level 9 (tree up, 60ft above)
+
+2 - Dragon's Watch
+-> 1 (tunnel north)
+
+3 - Root of Evil
+-> 1 (tunnel west, partially submerged)
+
+4 - Hazardous Chamber
+-> 1 (tunnel east)
+-> West dead-end (ceiling meets water, sunken pit near wall)
+
+5 - Bursaphelis' Lair (submerged)
+-> 1 (tunnel south, submerged; entrance appears as dead-end but slopes underwater to cavern beyond)
+
+
+CROWN LEVEL
+-----------
+Note: Damp, spider webs everywhere. Ceiling 30-50ft high with stalactites.
+
+1 - Crown (Gulthias Tree Canopy)
+-> 2 (northern passage east)
+-> 3 (southern passage east)
+-> 4 (passage north)
+-> 5 (passage west)
+-> Grove Level 9 (hole around tree trunk down, 90ft, thin webs cover gap)
+
+2 - Bolesh's Lair (Bebilith)
+-> 1 (passage west)
+-> 3 (passage south)
+
+3 - Spawning Room
+-> 1 (passage west)
+-> 2 (passage north)
+-> Grove Level 7 (shaft down through floor, 50ft drop, hidden by webs)
+
+4 - Cave of Old Bones
+-> 1 (passage south)
+
+5 - Flying Blade Room
+-> 4 (passage east)
+
+
+CROSS-LEVEL VERTICAL CONNECTIONS SUMMARY
+-----------------------------------------
+
+Grove 9 <-> Crown 1    (tree trunk, 90ft vertical, hole in ceiling/floor)
+Grove 9 <-> Roots 1    (tree trunk, 60ft vertical, chasm with walkway)
+Grove 7 <-> Crown 3    (shaft, 50ft vertical, DC 10 Athletics to climb up)
+Grove 8  -> Roots 1    (waterfall, 60ft drop, streams cascade down)
+Crown 2  -> Grove 8    (water drips through small holes in floor to garden ceiling, not traversable)

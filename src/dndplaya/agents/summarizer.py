@@ -67,6 +67,7 @@ def generate_module_summary(
     module_text: str,
     settings: Settings,
     pdf_filename: str = "",
+    context_window: int = 200_000,
 ) -> str:
     """Generate a pre-game summary of the module using an LLM call.
 
@@ -82,6 +83,8 @@ def generate_module_summary(
         settings: LLM settings.
         pdf_filename: Original PDF filename (used as grounding hint to
             prevent hallucination).
+        context_window: Provider's context window in tokens. Used to
+            truncate long modules for small-context models.
     """
     if pdf_filename:
         filename_note = (
@@ -96,6 +99,25 @@ def generate_module_summary(
         system_prompt=load_prompt("summarizer_system", filename_note=filename_note),
         settings=settings,
     )
+
+    # Truncate if the module text would exceed ~50% of the context window.
+    # This leaves room for the system prompt and the response. Estimate
+    # tokens as len/4 (rough char-to-token ratio).
+    max_input_tokens = context_window // 2
+    max_chars = max_input_tokens * 4
+    if len(module_text) > max_chars:
+        logger.info(
+            "Module text (%d chars, ~%d tokens) exceeds 50%% of context "
+            "window (%d tokens). Truncating to ~%d chars.",
+            len(module_text), len(module_text) // 4,
+            context_window, max_chars,
+        )
+        module_text = (
+            module_text[:max_chars]
+            + f"\n\n[...TRUNCATED — only first ~{max_chars // 2500} pages shown "
+            f"due to {context_window // 1000}k context window...]"
+        )
+
     summary = agent.send(module_text)
 
     # Post-summary validation: check for hallucination

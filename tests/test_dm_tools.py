@@ -122,9 +122,11 @@ class TestDMTools:
         props = tool["input_schema"]["properties"]
         required = tool["input_schema"]["required"]
 
-        assert "query" in props
-        assert props["query"]["type"] == "string"
-        assert set(required) == {"query"}
+        assert "search_terms" in props
+        assert props["search_terms"]["type"] == "string"
+        assert "question" in props
+        assert props["question"]["type"] == "string"
+        assert set(required) == {"search_terms"}
 
     def test_read_page_schema(self):
         tool = next(t for t in DM_TOOLS if t["name"] == "read_page")
@@ -133,6 +135,8 @@ class TestDMTools:
 
         assert "page_number" in props
         assert props["page_number"]["type"] == "integer"
+        assert "question" in props
+        assert props["question"]["type"] == "string"
         assert set(required) == {"page_number"}
 
     def test_next_page_no_required(self):
