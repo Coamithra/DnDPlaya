@@ -321,34 +321,30 @@ class AnthropicProvider:
         )
 
 
-# ── Ollama provider (OpenAI-compatible) ──────────────────────────────
+# ── Ollama provider (native /api/chat) ────────────────────────────────
 
 class OllamaProvider:
-    """Speaks the OpenAI-compatible API that Ollama exposes at /v1."""
+    """Uses Ollama's native /api/chat endpoint to pass num_ctx per-request.
+
+    The OpenAI-compatible /v1 endpoint silently ignores num_ctx (Ollama
+    issue #5356), so we must use the native API to control context window.
+    Without this, Ollama defaults to 4k tokens on <24GB VRAM and silently
+    truncates the front of the conversation — dropping the system prompt.
+    """
 
     MAX_RETRIES = 3          # retries on connection errors
     MAX_TOOL_RETRIES = 2     # retries on malformed tool calls
     RETRY_BASE_DELAY = 1.0
 
     def __init__(self, settings: Settings):
-        try:
-            import openai
-        except ImportError:
-            raise ImportError(
-                "The 'openai' package is required for Ollama support. "
-                "Install it with: pip install openai"
-            )
-        self._openai = openai
-        self.client = openai.OpenAI(
-            base_url=f"{settings.ollama_url}/v1",
-            api_key="ollama",  # Ollama ignores this but the SDK requires it
-        )
+        self._base_url = settings.ollama_url.rstrip("/")
         self.model = settings.ollama_model
+        self._num_ctx = settings.ollama_num_ctx
         self._guardrails = ProviderGuardrails(
             drain_loop_cap=5,
             detect_role_confusion=True,
             detect_non_ascii=True,
-            context_window=32_000,  # conservative default for local models
+            context_window=settings.ollama_num_ctx,
             supports_images=False,  # most local models are text-only
         )
 
@@ -367,17 +363,21 @@ class OllamaProvider:
         enable_thinking: bool = False,
         thinking_budget: int = 0,
     ) -> LLMResponse:
-        # Translate everything to OpenAI format
-        oai_messages = self._translate_messages(messages, system)
-        oai_tools = self._translate_tools(tools) if tools else None
+        # Translate Anthropic internal format → Ollama native format
+        native_messages = self._translate_messages(messages, system)
+        native_tools = self._translate_tools(tools) if tools else None
 
         kwargs: dict = {
             "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": oai_messages,
+            "messages": native_messages,
+            "stream": False,
+            "options": {
+                "num_ctx": self._num_ctx,
+                "num_predict": -1,  # no output limit — let local models finish
+            },
         }
-        if oai_tools:
-            kwargs["tools"] = oai_tools
+        if native_tools:
+            kwargs["tools"] = native_tools
 
         # Call with tool-validation retry loop
         for attempt in range(self.MAX_TOOL_RETRIES + 1):
@@ -542,17 +542,16 @@ class OllamaProvider:
             if btype == "text":
                 text_parts.append(block.get("text", ""))
             elif btype == "tool_use":
+                # Native Ollama API uses dict arguments (not JSON string)
                 tool_calls.append({
-                    "id": block["id"],
-                    "type": "function",
                     "function": {
                         "name": block["name"],
-                        "arguments": json.dumps(block.get("input", {})),
+                        "arguments": block.get("input", {}),
                     },
                 })
             # Skip thinking blocks — Ollama doesn't understand them
 
-        msg: dict = {"role": "assistant", "content": "\n".join(text_parts) or None}
+        msg: dict = {"role": "assistant", "content": "\n".join(text_parts) or ""}
         if tool_calls:
             msg["tool_calls"] = tool_calls
         return msg
@@ -724,16 +723,25 @@ class OllamaProvider:
 
     # -- retry logic -------------------------------------------------------
 
-    def _call_with_retry(self, kwargs: dict):
-        openai = self._openai
+    def _call_with_retry(self, kwargs: dict) -> dict:
+        """POST to Ollama native /api/chat with retry on connection errors."""
+        import urllib.request
+        import urllib.error
+
+        url = f"{self._base_url}/api/chat"
+        data = json.dumps(kwargs).encode("utf-8")
         last_error: Exception | None = None
+
         for attempt in range(self.MAX_RETRIES):
             try:
-                return self.client.chat.completions.create(**kwargs)
-            except (
-                openai.APITimeoutError,
-                openai.APIConnectionError,
-            ) as e:
+                req = urllib.request.Request(
+                    url, data=data,
+                    headers={"Content-Type": "application/json"},
+                )
+                # 5-minute timeout — local models are slow on big prompts
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    return json.loads(resp.read())
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last_error = e
                 if attempt < self.MAX_RETRIES - 1:
                     _time.sleep(self.RETRY_BASE_DELAY * (2 ** attempt))
@@ -741,46 +749,49 @@ class OllamaProvider:
 
     # -- response parsing --------------------------------------------------
 
-    def _parse_response(self, response) -> LLMResponse:
-        """Parse an OpenAI-format response into LLMResponse."""
-        choice = response.choices[0]
-        msg = choice.message
+    def _parse_response(self, response: dict) -> LLMResponse:
+        """Parse an Ollama native /api/chat response into LLMResponse."""
+        import uuid
+
+        msg = response.get("message", {})
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         raw_content: list[dict] = []
 
-        if msg.content:
-            text_parts.append(msg.content)
-            raw_content.append({"type": "text", "text": msg.content})
+        if msg.get("content"):
+            text_parts.append(msg["content"])
+            raw_content.append({"type": "text", "text": msg["content"]})
 
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                func = tc.get("function", {})
+                args = func.get("arguments", {})
+                # Native API returns arguments as dict, but handle str just in case
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, ValueError):
+                        args = {}
+
+                tc_id = f"ollama_{uuid.uuid4().hex[:8]}"
                 tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
+                    id=tc_id,
+                    name=func.get("name", ""),
                     arguments=args,
                 ))
                 raw_content.append({
                     "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.function.name,
+                    "id": tc_id,
+                    "name": func.get("name", ""),
                     "input": args,
                 })
 
-        # Map OpenAI stop reasons to our format
-        stop_reason = "end_turn"
-        if choice.finish_reason == "tool_calls":
-            stop_reason = "tool_use"
+        stop_reason = "tool_use" if tool_calls else "end_turn"
 
-        # Token usage
-        usage = response.usage
-        input_tokens = usage.prompt_tokens if usage else 0
-        output_tokens = usage.completion_tokens if usage else 0
+        # Token usage from native API
+        input_tokens = response.get("prompt_eval_count", 0) or 0
+        output_tokens = response.get("eval_count", 0) or 0
 
         return LLMResponse(
             text_parts=text_parts,
@@ -792,24 +803,9 @@ class OllamaProvider:
         )
 
     @staticmethod
-    def _assistant_msg_from_response(response) -> dict:
-        """Build an OpenAI assistant message dict from a raw response (for retry)."""
-        choice = response.choices[0]
-        msg = choice.message
-        result: dict = {"role": "assistant", "content": msg.content}
-        if msg.tool_calls:
-            result["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
-        return result
+    def _assistant_msg_from_response(response: dict) -> dict:
+        """Extract the assistant message from a native response (for retry)."""
+        return response.get("message", {"role": "assistant", "content": ""})
 
 
 # ── Factory ──────────────────────────────────────────────────────────

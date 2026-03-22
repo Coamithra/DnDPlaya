@@ -60,13 +60,16 @@ def cli():
 @click.option("--max-turns", default=None, type=click.IntRange(1), help="Max DM turns")
 @click.option("--provider", default=None, type=click.Choice(["anthropic", "ollama"]), help="LLM provider")
 @click.option("--ollama-model", default=None, help="Ollama model name (e.g. qwen2.5:14b)")
-def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: int, output: str | None, max_turns: int | None, provider: str | None, ollama_model: str | None):
+@click.option("--ollama-num-ctx", default=None, type=int, help="Ollama context window in tokens (default: 32768)")
+def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: int, output: str | None, max_turns: int | None, provider: str | None, ollama_model: str | None, ollama_num_ctx: int | None):
     """Run a playtesting session on a dungeon PDF."""
     settings = Settings()
     if provider is not None:
         settings.provider = provider
     if ollama_model is not None:
         settings.ollama_model = ollama_model
+    if ollama_num_ctx is not None:
+        settings.ollama_num_ctx = ollama_num_ctx
     settings.ensure_api_key()
 
     if level is not None:
@@ -248,7 +251,8 @@ def run(pdf_path: str, party: str, level: int | None, seed: int | None, runs: in
 @click.option("--no-reviews", default=None, type=bool, is_flag=True, help="Disable review_note tools")
 @click.option("--provider", default=None, type=click.Choice(["anthropic", "ollama"]), help="LLM provider")
 @click.option("--ollama-model", default=None, help="Ollama model name (e.g. qwen2.5:14b)")
-def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None, port: int | None, thinking: bool | None, music: str | None, no_reviews: bool | None, provider: str | None, ollama_model: str | None):
+@click.option("--ollama-num-ctx", default=None, type=int, help="Ollama context window in tokens (default: 32768)")
+def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None, port: int | None, thinking: bool | None, music: str | None, no_reviews: bool | None, provider: str | None, ollama_model: str | None, ollama_num_ctx: int | None):
     """Run a playtesting session with live web UI."""
     from .ui.server import start_ui
 
@@ -257,6 +261,8 @@ def ui(pdf_path: str, level: int | None, seed: int | None, max_turns: int | None
         settings.provider = provider
     if ollama_model is not None:
         settings.ollama_model = ollama_model
+    if ollama_num_ctx is not None:
+        settings.ollama_num_ctx = ollama_num_ctx
     settings.ensure_api_key()
 
     # CLI overrides

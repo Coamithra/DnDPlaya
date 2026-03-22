@@ -146,6 +146,9 @@ class Settings(BaseModel):
     ollama_url: str = Field(
         default_factory=lambda: _ini_str("session", "ollama_url", "http://localhost:11434")
     )
+    ollama_num_ctx: int = Field(
+        default_factory=lambda: _ini_int("session", "ollama_num_ctx", 32768)
+    )
 
     def ensure_api_key(self) -> None:
         if self.provider == "anthropic" and not self.anthropic_api_key.get_secret_value():

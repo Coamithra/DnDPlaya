@@ -17,9 +17,13 @@ python -m pytest tests/ -v    # Run tests (300 tests)
 ollama pull qwen2.5:14b       # Download model (~9 GB)
 dndplaya run dungeon.pdf --provider ollama --ollama-model qwen2.5:14b
 
+# Override context window (default 32768):
+dndplaya run dungeon.pdf --provider ollama --ollama-num-ctx 16384
+
 # Runbook — automated test session runner for Ollama:
 python runbook.py              # Run session with qwen (12 turns default)
 python runbook.py --max-turns 20
+python runbook.py --num-ctx 16384  # Lower context for less VRAM
 ```
 
 ## Configuration
@@ -101,7 +105,7 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 
 ## Key Design Decisions
 
-- **LLM provider abstraction**: `BaseAgent` delegates all API calls to a `LLMProvider` (protocol). `AnthropicProvider` handles prompt caching, extended thinking, and Anthropic retry logic. `OllamaProvider` speaks the OpenAI-compatible API, translates Anthropic message/tool formats to OpenAI on every call, and validates tool calls with retry (up to 2 retries on malformed calls, with error feedback to the model). History is stored in Anthropic format internally; `OllamaProvider` translates at call time. `create_provider(settings)` factory selects based on `settings.provider`.
+- **LLM provider abstraction**: `BaseAgent` delegates all API calls to a `LLMProvider` (protocol). `AnthropicProvider` handles prompt caching, extended thinking, and Anthropic retry logic. `OllamaProvider` uses Ollama's **native `/api/chat` endpoint** (not `/v1`) to pass `num_ctx` per-request — the OpenAI-compatible `/v1` endpoint silently ignores `num_ctx` (Ollama issue #5356), and without it Ollama defaults to 4k tokens on <24GB VRAM and silently front-truncates conversations. Translates Anthropic message/tool formats to Ollama native on every call, validates tool calls with retry (up to 2 retries on malformed calls, with error feedback to the model). History is stored in Anthropic format internally; `OllamaProvider` translates at call time. `create_provider(settings)` factory selects based on `settings.provider`.
 - **Model**: `claude-haiku-4-5-20241022` for all agents (cheap, ~$0.50-1.00/run) or local via Ollama (free, recommended: `qwen2.5:14b`)
 - **Orchestrator as physics engine**: All dice mechanics (skill checks, attacks, initiative, HP) resolved by the orchestrator. DM narrates; players act via tools.
 - **Character skills**: Per-class skill bonuses computed from 5e proficiency formula. `compute_skills(class, level)` → dict of skill → bonus. Includes saving throw proficiencies.
@@ -113,7 +117,7 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **Player tools**: Players can `attack` and `heal` via tool use. Attack results (hit/miss/damage) are bundled into the group response for the DM. Monster HP is NOT modified — the DM tracks it.
 - **Prompt caching**: Three-layer strategy: (1) system prompts have `cache_control`, (2) players use `set_cached_context(chat)` where `chat` is a single growing text of DM narrations + selected player actions — discarded responses never enter the chat, (3) `_mark_last_for_caching()` marks the last history message on every API call so the DM's growing conversation is always cached. Cache token tracking in `BaseAgent._record_usage()` feeds cache-aware cost calculation.
 - **Players have no persistent history**: Each player call rebuilds from the cached chat via `set_cached_context()`. Only winning responses are appended to the chat. This keeps the prefix stable for cache hits and avoids polluting the model's context with discarded attempts.
-- **Provider-aware compaction**: Context compaction threshold is derived from `ProviderGuardrails.context_window` (75% of window). Anthropic: 200K window → compacts at 150K. Ollama: 32K window → compacts at 24K. DM only — players use the cached chat approach instead.
+- **Provider-aware compaction**: Context compaction threshold is derived from `ProviderGuardrails.context_window` (75% of window). Anthropic: 200K window → compacts at 150K. Ollama: `ollama_num_ctx` setting (default 32K) → compacts at 75%. DM only — players use the cached chat approach instead.
 - **Early outs**: Session aborts on: DM stuck (5 consecutive no-tool turns), no narration (15 turns), cost budget exceeded ($3), with cache health warning (0 reads after 10 turns).
 - **Player response validation (`_validate_player_response`)**: Three-outcome validation before tool processing: `ok` (clean, proceed), `fixed` (cleaned up in-place, proceed with fixed version), `needs_retry` (unsalvageable, rollback history and resend with correction hint). The retry loop in `_call()` runs up to 3 attempts. Validation checks: (1) non-ASCII language detection (>30% non-ASCII → `needs_retry` with "Respond in English only"), (2) role confusion ("DM:" in say text → `fixed`, strip everything after it), (3) empty say (blank/whitespace → `fixed`, convert to `pass_turn`). After validation, `_resolve_player_tools` is pure game engine — no content checks.
 - **ProviderGuardrails (OO)**: `ProviderGuardrails` dataclass on the `LLMProvider` protocol declares what defensive guardrails a provider needs. `AnthropicProvider` → no guardrails. `OllamaProvider` → `drain_loop_cap=5`, `detect_role_confusion=True`, `detect_non_ascii=True`. Session reads `self._guardrails` (from `dm.provider.guardrails`). Provider-specific checks (non-ASCII, role confusion, drain cap) only fire when the provider requests them. Universal checks (empty say, heal guard, stale narration, all-pass advance) always fire.
@@ -127,7 +131,8 @@ Players end every response with `[URGENCY: 1-5]` to self-select turn priority.
 - **Page-based module reference**: DM uses `search_module`/`read_page`/`next_page`/`previous_page` to look up details. Module reference frequency is tracked as a metric.
 - **Tool use**: BaseAgent supports `send_with_tools()` and `submit_tool_results()` for the Anthropic tool use API. `Message.content` is `str | list` to handle tool use blocks.
 - **Extended thinking**: `BaseAgent` supports optional `enable_thinking` flag with configurable `thinking_budget` (min 1024 tokens). Thinking blocks are stored in history (with signature for API round-trip) and logged with `[thinking]...[/thinking]` tags in `dump_history()`. Enabled via `[ui] thinking` in INI or `--thinking` CLI flag for debugging player reasoning.
-- **INI config**: `dndplaya.ini` provides session defaults (model, party_level, max_turns, seed), UI settings (port, music dir, no_reviews, thinking), and output dir. Loaded by `config.py` via `configparser`. `.env` is reserved for secrets (API key). CLI flags override INI values. Three-layer precedence: INI → .env → CLI.
+- **INI config**: `dndplaya.ini` provides session defaults (model, party_level, max_turns, seed, ollama_num_ctx), UI settings (port, music dir, no_reviews, thinking), and output dir. Loaded by `config.py` via `configparser`. `.env` is reserved for secrets (API key). CLI flags override INI values. Three-layer precedence: INI → .env → CLI.
+- **Ollama context window**: `ollama_num_ctx` (INI/CLI, default 32768) is passed via the native `/api/chat` `options.num_ctx` field. Critical because Ollama's default is only 4k on <24GB VRAM. `OLLAMA_NUM_PARALLEL=1` recommended to prevent VRAM multiplication (runbook sets this automatically). `num_predict` is set to `-1` (unlimited output) — Ollama's default caps output at 128 tokens, which silently truncates DM narrations and tool calls mid-sentence. See `learnings/ollama-considerations.md` in the mtgai project for full research.
 - **4 classes**: Fighter, Rogue, Wizard, Cleric with pre-computed stats + skills for levels 1–11
 - **Dice expression parser**: `DiceRoller.parse_and_roll("2d6+3")` supports multiple dice terms and +/- modifiers
 - **PDF parsing**: Image extraction (≥200x200px) for map images sent to DM. Page-aware extraction for reference tools. Heading-based room detection with regex fallbacks still available via `parse` command.

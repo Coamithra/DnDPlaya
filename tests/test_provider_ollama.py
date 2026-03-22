@@ -1,13 +1,8 @@
 """Tests for OllamaProvider — message/tool translation, validation, retry."""
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
-import pytest
-
 from dndplaya.agents.provider import (
     OllamaProvider,
-    LLMResponse,
     ToolCall,
 )
 
@@ -113,7 +108,8 @@ class TestMessageTranslation:
         assert "Let me attack" in (asst.get("content") or "")
         assert len(asst["tool_calls"]) == 1
         assert asst["tool_calls"][0]["function"]["name"] == "attack"
-        assert json.loads(asst["tool_calls"][0]["function"]["arguments"]) == {"target": "goblin"}
+        # Native Ollama API uses dict arguments (not JSON string)
+        assert asst["tool_calls"][0]["function"]["arguments"] == {"target": "goblin"}
 
     def test_thinking_blocks_stripped(self):
         messages = [{
@@ -370,8 +366,8 @@ class TestTextToolCallExtraction:
 
 
 class TestOllamaProviderConfig:
-    def test_requires_openai_package(self):
-        """OllamaProvider needs the openai package."""
+    def test_basic_config(self):
+        """OllamaProvider picks up model and URL from settings."""
         from pydantic import SecretStr
         from dndplaya.config import Settings
         settings = Settings(
@@ -380,6 +376,34 @@ class TestOllamaProviderConfig:
             ollama_model="qwen2.5:14b",
             ollama_url="http://localhost:11434",
         )
-        # Should not raise (openai is installed in dev deps)
         provider = OllamaProvider(settings)
         assert provider.model == "qwen2.5:14b"
+
+    def test_num_ctx_in_guardrails(self):
+        """context_window in guardrails matches ollama_num_ctx."""
+        from pydantic import SecretStr
+        from dndplaya.config import Settings
+        settings = Settings(
+            anthropic_api_key=SecretStr(""),
+            provider="ollama",
+            ollama_model="qwen2.5:14b",
+            ollama_url="http://localhost:11434",
+            ollama_num_ctx=16384,
+        )
+        provider = OllamaProvider(settings)
+        assert provider.guardrails.context_window == 16384
+        assert provider.guardrails.compaction_threshold == int(16384 * 0.75)
+
+    def test_default_num_ctx(self):
+        """Default num_ctx is 32768."""
+        from pydantic import SecretStr
+        from dndplaya.config import Settings
+        settings = Settings(
+            anthropic_api_key=SecretStr(""),
+            provider="ollama",
+            ollama_model="qwen2.5:14b",
+            ollama_url="http://localhost:11434",
+        )
+        provider = OllamaProvider(settings)
+        assert provider._num_ctx == 32768
+        assert provider.guardrails.context_window == 32768

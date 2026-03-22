@@ -12,12 +12,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 OLLAMA_MODEL = "qwen2.5:14b"
+OLLAMA_NUM_CTX = 32768
 PDF_PATH = "Hidden Grove of the Deep Druids 20220504.pdf"
 OUTPUT_BASE = Path("output/runs")
 DEFAULT_MAX_TURNS = 12
@@ -35,17 +37,25 @@ def main():
     parser = argparse.ArgumentParser(description="Run a dndplaya session with Ollama")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--model", type=str, default=OLLAMA_MODEL)
+    parser.add_argument("--num-ctx", type=int, default=OLLAMA_NUM_CTX,
+                        help="Ollama context window in tokens (default: 32768)")
     args = parser.parse_args()
+
+    # Prevent Ollama from multiplying num_ctx by its parallel slot count.
+    # On 12GB VRAM, parallel slots + 32k context can cause CPU offload.
+    env = {**os.environ, "OLLAMA_NUM_PARALLEL": "1"}
 
     cmd = [
         sys.executable, "-m", "dndplaya", "run", PDF_PATH,
         "--provider", "ollama",
         "--ollama-model", args.model,
+        "--ollama-num-ctx", str(args.num_ctx),
         "--max-turns", str(args.max_turns),
     ]
     print(f"Running: {' '.join(cmd)}")
+    print(f"  OLLAMA_NUM_PARALLEL=1, num_ctx={args.num_ctx}")
     t0 = time.time()
-    result = subprocess.run(cmd, timeout=3600)
+    result = subprocess.run(cmd, env=env, timeout=3600)
     elapsed = time.time() - t0
 
     run_dir = find_latest_run()
